@@ -1,0 +1,37 @@
+{
+  "type": "synapsefs.manifest",
+  "format_version": 1,
+  "hash_algo": "blake3",
+  "file": {
+    "name": "model.safetensors",
+    "header_block": "b3:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+    "total_bytes": 24636,
+    "sha256": "3394556288aa1f0e0a5e0c2f5b7d9e1c3a5b7d9f1e3c5a7b9d1f3e5c7a9b1d3f5"
+  },
+  "buffer": [
+    {"tensor": "1.num_batches_tracked", "off": 0,     "nbytes": 8,     "group": "s1"},
+    {"tensor": "5.num_batches_tracked", "off": 8,     "nbytes": 8,     "group": "s5"},
+    {"tensor": "0.bias",                "off": 16,    "nbytes": 16,    "group": "g0"},
+    {"tensor": "0.weight",              "off": 32,    "nbytes": 432,   "group": "g0"},
+    {"tensor": "1.bias",                "off": 464,   "nbytes": 16,    "group": "g0"},
+    {"tensor": "1.weight",              "off": 480,   "nbytes": 16,    "group": "g0"},
+    {"tensor": "1.running_mean",        "off": 496,   "nbytes": 16,    "group": "g0"},
+    {"tensor": "1.running_var",         "off": 512,   "nbytes": 16,    "group": "g0"},
+    {"tensor": "4.weight",              "off": 528,   "nbytes": 2304,  "group": "g4"},
+    {"tensor": "4.bias",                "off": 2832,  "nbytes": 32,    "group": "g4"},
+    {"tensor": "5.weight",              "off": 2864,  "nbytes": 32,    "group": "g4"},
+    {"tensor": "5.bias",                "off": 2896,  "nbytes": 32,    "group": "g4"},
+    {"tensor": "5.running_mean",        "off": 2928,  "nbytes": 32,    "group": "g4"},
+    {"tensor": "5.running_var",         "off": 2960,  "nbytes": 32,    "group": "g4"},
+    {"tensor": "9.weight",              "off": 2992,  "nbytes": 20480, "group": "out"},
+    {"tensor": "9.bias",                "off": 23472, "nbytes": 20,    "group": "out"}
+  ],
+  "groups": {
+    "g0":  {"mode": "delta", "base": {"commit": "b3:c4de41a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d", "group": "g0"},
+            "diff_block": "b3:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899", "chain_depth": 4},
+    "g4":  {"mode": "full", "block": "b3:cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011aabb", "chain_depth": 0},
+    "out": {"mode": "full", "block": "b3:dd44ee55ff6677889900aabbccddeeff001122334455667788990011aabbccdd", "chain_depth": 0},
+    "s1":  {"mode": "full", "block": "b3:ee55ff6677889900aabbccddeeff001122334455667788990011aabbccddee66", "chain_depth": 0},
+    "s5":  {"mode": "full", "block": "b3:ff6677889900aabbccddeeff001122334455667788990011aabbccddee6677aa", "chain_depth": 0}
+  }
+}

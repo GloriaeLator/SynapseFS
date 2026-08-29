@@ -1,0 +1,32 @@
+{
+  "magic": "SYNDIFF",
+  "format_version": 1,
+  "group": "g0",
+  "codec": "zstd",
+  "permutation": {"kind": "explicit", "n": 8, "dtype": "u16", "off": 0, "len": 16},
+  "tensors": [
+    {
+      "name": "0.weight",
+      "shape": [8, 3, 3, 3],
+      "dtype": "F16",
+      "residual": "xor_after_permute",
+      "transform": "none",
+      "frames": [
+        {"units": [0, 4], "off": 16,  "len": 168, "digest": "7c1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7"},
+        {"units": [4, 8], "off": 184, "len": 144, "digest": "b904c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f8"}
+      ]
+    },
+    {
+      "name": "0.bias",
+      "shape": [8],
+      "dtype": "F16",
+      "residual": "xor_after_permute",
+      "transform": "none",
+      "frames": [
+        {"units": [0, 8], "off": 328, "len": 12, "digest": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809"}
+      ]
+    }
+  ],
+  "alignable": true,
+  "alignment": {"method": "weight_matching_lap", "cost_raw": 0.0021, "cost_normalized": 0.031}
+}

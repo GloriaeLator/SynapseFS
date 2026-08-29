@@ -1,0 +1,41 @@
+# Fixture catalogue. Generated, never committed — the PS requires large
+# fixtures to be scripted, and CI fails if a .safetensors appears in git.
+#
+#   make fixtures-small    # everything except the 7B pair
+#   make fixtures          # everything
+
+[tiny_mlp]
+generator   = "gen_mlp.py"
+args        = ["--tiny"]
+params      = "~65k"
+dtype       = "F16"
+size        = "~130 KiB"
+purpose     = "unit tests and CI round-trip; fast enough to run on every push"
+
+[mlp]
+generator   = "gen_mlp.py"
+params      = "~1M"
+dtype       = "F16"
+size        = "~2 MiB"
+outputs     = ["mlp_step0.safetensors", "mlp_step1.safetensors", "mlp_permuted.safetensors"]
+purpose     = "Day 2: every module works here before anything else is tried"
+
+[mlp_permuted]
+generator   = "permute.py"
+source      = "mlp_step0.safetensors"
+purpose     = "function-identical, 100% byte-different. The headline demo, and the fixture that proves alignment works at all"
+
+[resnet]
+generator   = "gen_resnet.py"
+params      = "~11M"
+dtype       = "F16"
+size        = "~22 MiB"
+purpose     = "conv + batchnorm + residual groups, and the flatten blocking factor"
+
+[llm_7b]
+generator   = "gen_7b.py"
+params      = "~7B"
+dtype       = "F16"
+size        = "~14 GiB per checkpoint"
+purpose     = "scale: out-of-core alignment, verify time, mount RSS under the 16 GB cap"
+note        = "generates two checkpoints. Needs ~30 GiB of free disk. Slow."

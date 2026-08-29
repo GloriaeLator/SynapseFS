@@ -1,0 +1,130 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/install/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "VCPKG_MANIFEST_MODE": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "dev — RelWithDebInfo, warnings as errors, tests + bench",
+      "description": "Day-to-day build. Optimised enough that benchmark numbers mean something, with symbols.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SFS_WARNINGS_AS_ERRORS": "ON",
+        "SFS_BUILD_TESTS": "ON",
+        "SFS_BUILD_BENCH": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "debug — -O0 -g, assertions on",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SFS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "release — the configuration all published numbers come from",
+      "description": "docs/benchmarks.md numbers must be produced from this preset and no other.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SFS_ENABLE_LTO": "ON",
+        "SFS_BUILD_TESTS": "OFF",
+        "SFS_BUILD_BENCH": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "asan — address + undefined sanitizers",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SFS_SANITIZER": "address+undefined"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "tsan — thread sanitizer, for the mount concurrency tests",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SFS_SANITIZER": "thread"
+      }
+    },
+    {
+      "name": "no-simd",
+      "displayName": "no-simd — scalar residual kernels only",
+      "description": "Reference build for test_kernel_equivalence: the scalar path is the oracle.",
+      "inherits": "dev",
+      "cacheVariables": { "SFS_ENABLE_SIMD": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev",     "configurePreset": "dev" },
+    { "name": "debug",   "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan",    "configurePreset": "asan" },
+    { "name": "tsan",    "configurePreset": "tsan" },
+    { "name": "no-simd", "configurePreset": "no-simd" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
+      "name": "unit",
+      "configurePreset": "dev",
+      "inherits": "dev",
+      "filter": { "include": { "label": "unit" } }
+    },
+    {
+      "name": "e2e",
+      "configurePreset": "dev",
+      "inherits": "dev",
+      "filter": { "include": { "label": "e2e" } }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "concurrency" } }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "ci",
+      "steps": [
+        { "type": "configure", "name": "dev" },
+        { "type": "build",     "name": "dev" },
+        { "type": "test",      "name": "dev" }
+      ]
+    }
+  ]
+}
