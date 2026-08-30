@@ -12,7 +12,9 @@
 /// is Python and lives in fixtures/.
 
 #include <filesystem>
+#include <memory>
 #include <span>
+#include <string>
 
 #include <synapsefs/core/error.hpp>
 #include <synapsefs/format/manifest.hpp>
@@ -21,6 +23,28 @@ namespace sfs::stio {
 
 using core::Result;
 using core::Status;
+
+/// Streaming SHA-256, exposed for `sfs commit` to compute
+/// manifest.file.sha256 the same way StWriter verifies it on checkout — one
+/// implementation, not two. See st_writer.cpp for why SHA-256 (not BLAKE3)
+/// is used for this one witness field.
+class Sha256Stream {
+public:
+    Sha256Stream();
+    ~Sha256Stream();
+    Sha256Stream(Sha256Stream&&) noexcept;
+    Sha256Stream& operator=(Sha256Stream&&) noexcept;
+    Sha256Stream(const Sha256Stream&) = delete;
+    Sha256Stream& operator=(const Sha256Stream&) = delete;
+
+    void update(std::span<const std::byte> data);
+    /// Finalises and returns lowercase hex. Only call once.
+    [[nodiscard]] std::string finish_hex();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 /// Streaming sink for `sfs checkout`: write the header block, then buffer
 /// ranges in order, then finish. Verifies the running total against

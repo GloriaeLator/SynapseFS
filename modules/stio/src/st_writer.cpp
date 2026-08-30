@@ -125,6 +125,29 @@ std::string hex(std::span<const std::uint8_t> b) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// Sha256Stream — public pimpl wrapper around the vendored Sha256 above, so
+// `sfs commit` can compute the same witness `sfs checkout` verifies.
+// ---------------------------------------------------------------------------
+
+struct Sha256Stream::Impl {
+    Sha256 hasher;
+};
+
+Sha256Stream::Sha256Stream() : impl_(std::make_unique<Impl>()) {}
+Sha256Stream::~Sha256Stream() = default;
+Sha256Stream::Sha256Stream(Sha256Stream&&) noexcept = default;
+Sha256Stream& Sha256Stream::operator=(Sha256Stream&&) noexcept = default;
+
+void Sha256Stream::update(std::span<const std::byte> data) {
+    impl_->hasher.update(data.data(), data.size());
+}
+
+std::string Sha256Stream::finish_hex() {
+    auto digest = impl_->hasher.finalize();
+    return hex(digest);
+}
+
+// ---------------------------------------------------------------------------
 // StWriter
 // ---------------------------------------------------------------------------
 
