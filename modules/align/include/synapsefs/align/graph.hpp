@@ -47,7 +47,19 @@ public:
     [[nodiscard]] core::Result<core::Topology> finalize();
 
 private:
-    struct Node;
+    // Plain data, not sensitive implementation detail; kept in the header
+    // (rather than forward-declared and defined in graph.cpp) since a
+    // std::vector of an incomplete nested type needs every one of the
+    // class's implicit special members instantiated at first use, and the
+    // real Topology/Error return types elsewhere in this class trigger that
+    // eagerly in a way a plain destructor declaration does not avoid.
+    struct Node {
+        AxisKey       key;
+        std::uint64_t len = 0;
+        std::uint32_t parent = 0;  // self when a root
+        std::uint32_t rank = 0;
+        bool          pinned = false;
+    };
     std::vector<Node> nodes_;
     std::unordered_map<AxisKey, std::uint32_t, AxisKeyHash> index_;
 };
