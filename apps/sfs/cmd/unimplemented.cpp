@@ -23,7 +23,7 @@ int run_not_implemented(const std::string& name) {
 }  // namespace
 
 void register_unimplemented(CLI::App& app, int& exit_code) {
-    static const char* kNames[] = {"merge", "push", "pull", "serve", "gc"};
+    static const char* kNames[] = {"push", "pull", "serve"};
     for (const char* name : kNames) {
         auto* c = app.add_subcommand(name, std::string("(not implemented) ") + name);
         c->allow_extras();
