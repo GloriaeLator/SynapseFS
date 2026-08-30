@@ -17,6 +17,8 @@ void register_checkout(CLI::App& app, int& exit_code);
 void register_log(CLI::App& app, int& exit_code);
 void register_verify(CLI::App& app, int& exit_code);
 void register_branch(CLI::App& app, int& exit_code);
+void register_merge(CLI::App& app, int& exit_code);
+void register_gc(CLI::App& app, int& exit_code);
 #ifdef SFS_WITH_MOUNT
 void register_mount(CLI::App& app, int& exit_code);
 void register_unmount(CLI::App& app, int& exit_code);
@@ -36,14 +38,15 @@ int main(int argc, char** argv) {
     sfs::app::cmd::register_log(app, exit_code);
     sfs::app::cmd::register_verify(app, exit_code);
     sfs::app::cmd::register_branch(app, exit_code);
+    sfs::app::cmd::register_merge(app, exit_code);
+    sfs::app::cmd::register_gc(app, exit_code);
 #ifdef SFS_WITH_MOUNT
     sfs::app::cmd::register_mount(app, exit_code);
     sfs::app::cmd::register_unmount(app, exit_code);
 #endif
-    // merge / push / pull / gc: architected in store/net but not ported into
-    // this build (align, codec residuals, and net are out of scope — see
-    // README "Status"). Wired here so `sfs merge` names what's missing
-    // instead of CLI11 reporting an unknown subcommand.
+    // push / pull / serve: net is unimplemented (modules/net has no .cpp).
+    // Wired here so they name what's missing and exit 7 instead of CLI11
+    // reporting an unknown subcommand.
     sfs::app::cmd::register_unimplemented(app, exit_code);
 
     CLI11_PARSE(app, argc, argv);
