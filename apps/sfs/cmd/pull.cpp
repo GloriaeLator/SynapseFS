@@ -1,4 +1,4 @@
-#include <CLI/CLI.h>
+#include <CLI/CLI.hpp>
 
 #include <iostream>
 
@@ -10,7 +10,7 @@
 namespace sfs::app::cmd{
     namespace{
         int run_pull(const std::string branch , const std::string remote_url){
-            net::Repository target = std::filesystem::current_path();
+            net::Repository target = net::Repository(std::filesystem::current_path());
             net::pull_branch(target,remote_url,branch);
             return ExitCode::Ok;
         }
@@ -19,9 +19,9 @@ namespace sfs::app::cmd{
     void register_pull(CLI::App& app, int& exit_code){
         static std::string branch;
         static std::string remote_url;
-        auto c* = app.add_subcommand("pull","Pull commit history to other user.");
+        auto* c = app.add_subcommand("pull","Pull commit history to other user.");
         c->add_option("branch",branch,"Select Branch to Pull")->required();
         c->add_option("remote_url",remote_url,"http://ip:port Of the User to PULL From.")->required();
-        c->callback([&exit_code] {exit_code = run_push(branch,remote_url)})
+        c->callback([&exit_code] {exit_code = run_pull(branch,remote_url);});
     }
 }
