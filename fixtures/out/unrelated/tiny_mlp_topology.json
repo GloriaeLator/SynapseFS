@@ -1,0 +1,97 @@
+{
+  "type": "synapsefs.topology",
+  "format_version": 1,
+  "source": {
+    "kind": "synthetic",
+    "arch": "mlp"
+  },
+  "perm_groups": {
+    "in": {
+      "size": 128,
+      "pinned": true
+    },
+    "g0": {
+      "size": 192,
+      "pinned": false
+    },
+    "g2": {
+      "size": 128,
+      "pinned": false
+    },
+    "out": {
+      "size": 64,
+      "pinned": true
+    }
+  },
+  "tensors": {
+    "0.weight": {
+      "axes": [
+        {
+          "dim": 0,
+          "group": "g0",
+          "block": 1
+        },
+        {
+          "dim": 1,
+          "group": "in",
+          "block": 1
+        }
+      ]
+    },
+    "0.bias": {
+      "axes": [
+        {
+          "dim": 0,
+          "group": "g0",
+          "block": 1
+        }
+      ]
+    },
+    "2.weight": {
+      "axes": [
+        {
+          "dim": 0,
+          "group": "g2",
+          "block": 1
+        },
+        {
+          "dim": 1,
+          "group": "g0",
+          "block": 1
+        }
+      ]
+    },
+    "2.bias": {
+      "axes": [
+        {
+          "dim": 0,
+          "group": "g2",
+          "block": 1
+        }
+      ]
+    },
+    "4.weight": {
+      "axes": [
+        {
+          "dim": 0,
+          "group": "out",
+          "block": 1
+        },
+        {
+          "dim": 1,
+          "group": "g2",
+          "block": 1
+        }
+      ]
+    },
+    "4.bias": {
+      "axes": [
+        {
+          "dim": 0,
+          "group": "out",
+          "block": 1
+        }
+      ]
+    }
+  }
+}

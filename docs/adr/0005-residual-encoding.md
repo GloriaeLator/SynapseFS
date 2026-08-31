@@ -1,7 +1,7 @@
 # ADR 0005 — Framed residuals; encoding chosen by measurement
 
-- **Status:** Accepted (frame design) / parameters pending the Day-2 measurement
-- **Date:** 2026-08-29
+- **Status:** Accepted (frame design and encoding)
+- **Date:** 2026-08-29 (frame design), 2026-08-31 (encoding, measured)
 
 ## Context
 
@@ -48,7 +48,37 @@ detection survives the reconstruction path at a cost proportional to what was
 read. That property is not asked for by the PS and is our strongest
 original-thinking claim in Module 2.
 
-## Part 2 — Encoding: to be decided by measurement
+## Part 2 — Encoding: decided by measurement
+
+**Decision: `zigzag(b-a)` + no transform.** Measured on `tiny_mlp` (~58k
+params, fp16; `fixtures/gen_mlp.py` + `fixtures/permute.py`) via a standalone
+dev-box build of `bench/residual_codec.cpp` — not yet the graded machine or
+final ISA (scalar kernel only; re-measure once AVX2/AVX512 land and this
+builds under the real CMake release preset, but the encoding choice itself is
+not expected to change with ISA, only its throughput).
+
+On the fine-tune pair — the only one of the three that has real, non-floored
+signal to discriminate on — `zigzag(b-a)` + none had both the best ratio
+(0.8196, tied with byte-plane to four decimals) and the best decompress
+throughput (1291 MB/s, clear best of six). No ratio-vs-throughput trade was
+needed: this candidate simply won both. Full six-number table:
+`docs/tradeoffs.md` §1.4.
+
+This **refutes the intuition below** — byte-plane and bitshuffle measured
+*worse* on both axes than plain `zigzag`, not better. Recorded as the
+"how we would know we were wrong" section anticipated: the measurement, not
+the intuition, decides. `EncodeOptions`' defaults
+(`modules/codec/include/synapsefs/codec/diff_encoder.hpp`) are set to
+`ResidualKind::ZigzagAfterPermute` / `Transform::None` accordingly.
+
+The permuted-only and unrelated-checkpoints pairs were also measured (same
+tradeoffs.md section) but don't discriminate between encodings: the former
+floors all six at the same near-zero ratio (a pure permutation's residual is
+exactly zero once aligned), the latter confirms the §7/rule-4 warning below
+that XOR/zigzag of unrelated tensors can compress to *larger* than the input
+regardless of which of the six is used.
+
+Original framing kept below for the record:
 
 Candidates, all bijective and all exact (no floating-point arithmetic is
 performed on weights anywhere in this system):

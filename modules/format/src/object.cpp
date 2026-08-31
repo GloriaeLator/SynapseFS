@@ -75,13 +75,13 @@ Result<std::vector<std::byte>> encode_object(ObjectKind kind, std::span<const st
         return SFS_ERR(NotImplemented, "object compression not implemented in this build");
     }
 
-    if (!core::is_pow2(chunk_bytes))
+    if (!util::is_pow2(chunk_bytes))
         return SFS_ERR(Internal, "chunk_bytes must be a power of two");
 
     ObjectHeader hdr;
     hdr.kind = kind;
     hdr.compression = Compression::None;
-    hdr.chunk_log2 = core::log2_exact(chunk_bytes);
+    hdr.chunk_log2 = util::log2_exact(chunk_bytes);
     hdr.payload_len = payload.size();
     hdr.stored_len = payload.size();
 

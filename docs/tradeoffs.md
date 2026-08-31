@@ -55,23 +55,59 @@ granularity differed. 300× the throughput *and* a better diagnostic.
 
 [ADR 0005](adr/0005-residual-encoding.md)
 
-### 1.4 Residual encoding — **PENDING**, six numbers required
+### 1.4 Residual encoding — measured on `tiny_mlp` (~58k params, fp16)
 
-Timeboxed to 90 minutes, on a real fine-tune pair. Measure **ratio and
-decompression throughput**, both, for all six:
+Measured via `bench/residual_codec.cpp` (dev-box standalone build — g++ 14.2,
+MSYS2 UCRT64, scalar kernel only; no AVX2/AVX512 kernels exist yet, so this is
+not the graded machine or the final ISA and WILL be re-measured once the
+project builds under the real CMake/release preset). Command:
+
+```
+residual_codec --fixtures-dir fixtures/out --json
+```
+
+**Fine-tune pair** (`tiny_mlp_step0` → `tiny_mlp_step1`, one simulated
+fine-tune step, 115456 naive bytes). Baseline — plain zstd of the target, no
+alignment at all — is ratio **0.9173**, so every row below that number is
+alignment actually earning its keep:
 
 | Residual | Transform | Ratio | Decompress MB/s |
 |---|---|---|---|
-| `a ^ b` | none | _pending_ | _pending_ |
-| `a ^ b` | byte-plane | _pending_ | _pending_ |
-| `a ^ b` | bitshuffle | _pending_ | _pending_ |
-| `zigzag(b-a)` | none | _pending_ | _pending_ |
-| `zigzag(b-a)` | byte-plane | _pending_ | _pending_ |
-| `zigzag(b-a)` | bitshuffle | _pending_ | _pending_ |
+| `a ^ b` | none | 0.8408 | 574 |
+| `a ^ b` | byte-plane | 0.8412 | 786 |
+| `a ^ b` | bitshuffle | 0.8605 | 1083 |
+| `zigzag(b-a)` | none | **0.8196** | **1291** |
+| `zigzag(b-a)` | byte-plane | 0.8196 | 966 |
+| `zigzag(b-a)` | bitshuffle | 0.8156 | 991 |
 
-Ratio is 7% of the grade and throughput is 8%. **Do not choose on ratio alone.**
-Record all six here even after picking one; the rejected rows are the answer to
-"did you consider…".
+**`zigzag(b-a)` + none wins on both axes at once** — best ratio (tied with
+byte-plane to four decimal places) *and* best throughput, no ratio-vs-
+throughput trade to argue about here. That refutes this ADR's own stated
+intuition ("byte-plane/bitshuffle should group zeros and help zstd"): on this
+fixture the extra transform pass costs decompress throughput and doesn't
+improve ratio enough to matter. Recorded per §5.6 below regardless — the
+rejected rows are the answer to "did you consider…".
+
+**Permuted-only pair** (`tiny_mlp_step0` → `tiny_mlp_permuted`, a pure
+permutation, no fine-tune noise) — the headline demonstration this whole
+project exists for: ratio **0.00019** across all six candidates (a pure
+permutation's residual is exactly zero once correctly aligned, so the
+transform/codec choice can't be distinguished at this floor — decompress
+throughput is the only thing that varies, 6.3–17.4 GB/s, not meaningful at
+this buffer size). Baseline plain-zstd-of-target for the same pair: 0.9187.
+Alignment turns a 92%-of-original file into a 0.02%-of-original file.
+
+**Unrelated checkpoints** (two independently-seeded `tiny_mlp` inits, no
+relationship at all): ratios 0.94–1.0001 — confirms this ADR's warning that
+XOR/zigzag of unrelated fp16 tensors is noise that can compress to *larger*
+than the input (`zigzag + bitshuffle` measured 1.0001). This is exactly why
+§7's rule 4 (`snapshot_alpha`) exists and must trigger `full` storage here.
+
+Ratio is 7% of the grade and throughput is 8%. On the fine-tune pair the
+choice didn't need to trade one for the other; on the permuted-only pair
+ratio is at its floor regardless of choice. **Decision: `zigzag_after_permute`
++ `Transform::None` is the default in `EncodeOptions`** (see
+[ADR 0005](adr/0005-residual-encoding.md), now Accepted).
 
 ### 1.5 LAP fallback crossover — **PENDING**
 
