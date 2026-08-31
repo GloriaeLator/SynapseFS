@@ -6,6 +6,8 @@
 # build that silently omits a file when someone resolves it wrong. Ninja
 # re-runs CMake when the glob result changes, so the usual objection does not
 # apply here. Revisit if this outlives the project.
+cmake_minimum_required(VERSION 3.25)
+
 file(GLOB SFS_NET_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB_RECURSE SFS_NET_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp")
 
