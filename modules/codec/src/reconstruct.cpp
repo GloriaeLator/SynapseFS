@@ -81,6 +81,18 @@ Result<std::vector<std::byte>> gather_base_bytes(const ReadCtx& base_ctx,
     return out;
 }
 
+// The secondary axis's permutation, plus the byte size of the block that
+// moves together with each position along it. For a rank-2 tensor that's
+// just one element's width — but for a rank > 2 tensor (a conv weight
+// [out_c, in_c, kh, kw]), the secondary axis (in_c, dim 1) is followed by
+// TRAILING dimensions (kh, kw) that move as one block per in-channel index,
+// exactly the way ColumnPermutingSource's write-side counterpart
+// (commit_planner.cpp) computes it. `perm` empty means "nothing to do".
+struct SecondaryAxis {
+    std::vector<std::uint32_t> perm;
+    std::uint32_t unit_bytes = 0;
+};
+
 // A tensor's SECONDARY (non-dim-0) axis, if it has one and it isn't
 // pinned/identity, is bound to a DIFFERENT permutation group than the one
 // this diff artifact's own `permutation` field describes. That group's
@@ -90,23 +102,28 @@ Result<std::vector<std::byte>> gather_base_bytes(const ReadCtx& base_ctx,
 // fetch, not a walk through commit history — independent of chain_depth
 // entirely, unlike the primary base recursion above.
 //
-// Returns an empty vector for "no secondary axis, or it's pinned/identity —
+// Returns an empty perm for "no secondary axis, or it's pinned/identity —
 // nothing to do", the same convention gather_base_bytes uses for Identity.
-Result<std::vector<std::uint32_t>> resolve_secondary_permutation(const ReadCtx& ctx,
-                                                                 const format::TensorDiff& tdiff) {
-    if (ctx.topology == nullptr) return std::vector<std::uint32_t>{};
+Result<SecondaryAxis> resolve_secondary_permutation(const ReadCtx& ctx,
+                                                    const format::TensorDiff& tdiff) {
+    if (ctx.topology == nullptr) return SecondaryAxis{};
 
     const auto tit = ctx.topology->tensors.find(tdiff.shape_name);
-    if (tit == ctx.topology->tensors.end()) return std::vector<std::uint32_t>{};
+    if (tit == ctx.topology->tensors.end()) return SecondaryAxis{};
 
     const core::AxisBinding* secondary = nullptr;
     for (const auto& ax : tit->second.axes) {
         if (ax.dim != 0) { secondary = &ax; break; }
     }
-    if (secondary == nullptr) return std::vector<std::uint32_t>{};  // single-axis tensor
+    if (secondary == nullptr) return SecondaryAxis{};  // single-axis tensor
 
     const auto* pg = ctx.topology->find_group(secondary->group);
-    if (pg != nullptr && pg->pinned) return std::vector<std::uint32_t>{};  // identity
+    if (pg != nullptr && pg->pinned) return SecondaryAxis{};  // identity
+
+    std::uint64_t trailing = 1;
+    for (std::size_t d = static_cast<std::size_t>(secondary->dim) + 1; d < tdiff.shape.size(); ++d)
+        trailing *= tdiff.shape[d];
+    const auto unit_bytes = static_cast<std::uint32_t>(trailing) * core::dtype_size(tdiff.dtype);
 
     // Whichever tensor owns `secondary->group` via ITS OWN dim-0 axis is
     // where that group's permutation, for this commit, is recorded —
@@ -133,7 +150,7 @@ Result<std::vector<std::uint32_t>> resolve_secondary_permutation(const ReadCtx& 
         // this only happens when that permutation IS identity. Trusting
         // that invariant rather than erroring is deliberate: it's the same
         // invariant that made this tensor eligible for Delta at all.
-        return std::vector<std::uint32_t>{};
+        return SecondaryAxis{};
     }
     if (!owner_group->diff_block)
         return SFS_ERR(MalformedObject, "secondary axis owner missing diff_block", owner_name);
@@ -144,13 +161,13 @@ Result<std::vector<std::uint32_t>> resolve_secondary_permutation(const ReadCtx& 
     if (!owner_artifact) return std::unexpected(owner_artifact.error());
 
     if (owner_artifact->header.permutation.kind == format::PermKind::Identity)
-        return std::vector<std::uint32_t>{};
+        return SecondaryAxis{};
 
     auto owner_perm = format::read_permutation(owner_artifact->header.permutation,
                                               owner_artifact->payload);
     if (!owner_perm) return std::unexpected(owner_perm.error());
 
-    return expand(*owner_perm, secondary->block);
+    return SecondaryAxis{expand(*owner_perm, secondary->block), unit_bytes};
 }
 
 // One tensor's contribution to a Delta read: the frame loop from spec 12 §6,
@@ -195,10 +212,9 @@ Result<std::size_t> read_tensor_range(const ReadCtx& ctx, const ReadCtx& base_ct
     }
 
     // Resolved once per tensor, not per frame — it doesn't vary by frame.
-    auto secondary_perm = resolve_secondary_permutation(ctx, tdiff);
-    if (!secondary_perm) return std::unexpected(secondary_perm.error());
-    const std::uint32_t elem_bytes = core::dtype_size(tdiff.dtype);
-    if (!secondary_perm->empty() && unit_bytes != secondary_perm->size() * elem_bytes) {
+    auto secondary = resolve_secondary_permutation(ctx, tdiff);
+    if (!secondary) return std::unexpected(secondary.error());
+    if (!secondary->perm.empty() && unit_bytes != secondary->perm.size() * secondary->unit_bytes) {
         return SFS_ERR(BlockFactorMismatch, "secondary axis length does not match row width",
                        tdiff.shape_name);
     }
@@ -224,13 +240,13 @@ Result<std::size_t> read_tensor_range(const ReadCtx& ctx, const ReadCtx& base_ct
         // rather than folded into it — the way diff_encoder.cpp's WRITE-side
         // ColumnPermutingSource does it BEFORE — produces the identical
         // bytes.
-        if (!secondary_perm->empty()) {
+        if (!secondary->perm.empty()) {
             const std::uint64_t row_count = frame.unit_end - frame.unit_begin;
             std::vector<std::byte> reordered(base_bytes->size());
             std::vector<std::byte> scratch(unit_bytes);
             for (std::uint64_t r = 0; r < row_count; ++r) {
                 std::span<const std::byte> row(base_bytes->data() + r * unit_bytes, unit_bytes);
-                permute_units(scratch, row, *secondary_perm, elem_bytes);
+                permute_units(scratch, row, secondary->perm, secondary->unit_bytes);
                 std::memcpy(reordered.data() + r * unit_bytes, scratch.data(), unit_bytes);
             }
             *base_bytes = std::move(reordered);

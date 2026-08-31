@@ -23,12 +23,21 @@ namespace {
 // axis moved. Row and column permutation commute
 // (base[perm_row[i], perm_col[j]] doesn't care which is applied first), so
 // this composes with encode_group's existing gather with no changes there.
+//
+// `secondary_unit_bytes` is NOT necessarily one element's width: for a rank
+// > 2 tensor (a conv weight [out_c, in_c, kh, kw]), the secondary axis
+// (in_c, dim 1) is followed by TRAILING dimensions (kh, kw) that move as one
+// block with each in-channel index — permute_units's `unit_bytes` already
+// means exactly "the size of one gathered item", so passing
+// trailing_elems * dtype_size here (computed by the caller, which has the
+// tensor's shape) is the whole fix; nothing else in this class changes.
 class ColumnPermutingSource : public core::ITensorSource {
 public:
     ColumnPermutingSource(core::ITensorSource& inner, std::string tensor,
-                         std::vector<std::uint32_t> expanded_col_perm, std::uint32_t elem_bytes)
+                         std::vector<std::uint32_t> expanded_col_perm,
+                         std::uint32_t secondary_unit_bytes)
         : inner_(inner), tensor_(std::move(tensor)), col_perm_(std::move(expanded_col_perm)),
-          elem_bytes_(elem_bytes) {}
+          unit_bytes_(secondary_unit_bytes) {}
 
     std::span<const std::byte> header_bytes() const override { return inner_.header_bytes(); }
     std::span<const core::BufferEntry> buffer_layout() const override {
@@ -44,7 +53,7 @@ public:
         auto n = inner_.read_units(name, first, count, out);
         if (!n) return n;
 
-        const auto row_bytes = static_cast<std::uint64_t>(col_perm_.size()) * elem_bytes_;
+        const auto row_bytes = static_cast<std::uint64_t>(col_perm_.size()) * unit_bytes_;
         if (*n != count * row_bytes) {
             return SFS_ERR(Internal, "ColumnPermutingSource: short read from inner source",
                           tensor_);
@@ -54,7 +63,7 @@ public:
         for (std::uint64_t r = 0; r < count; ++r) {
             std::byte* row = out.data() + r * row_bytes;
             codec::permute_units(scratch, std::span<const std::byte>(row, row_bytes), col_perm_,
-                                elem_bytes_);
+                                unit_bytes_);
             std::memcpy(row, scratch.data(), row_bytes);
         }
         return n;
@@ -64,8 +73,17 @@ private:
     core::ITensorSource& inner_;
     std::string tensor_;
     std::vector<std::uint32_t> col_perm_;
-    std::uint32_t elem_bytes_;
+    std::uint32_t unit_bytes_;
 };
+
+// Product of every dimension of `shape` AFTER `dim` — the size, in
+// elements, of the block that moves together with each index along `dim`.
+// 1 for a rank-2 tensor (dim is the last axis; nothing trails it).
+std::uint64_t trailing_elems(std::span<const std::uint64_t> shape, std::uint32_t dim) {
+    std::uint64_t t = 1;
+    for (std::size_t d = static_cast<std::size_t>(dim) + 1; d < shape.size(); ++d) t *= shape[d];
+    return t;
+}
 
 // Step 1: a group counts as "moved" only if align found a genuine,
 // non-identity, alignable permutation for it. Pinned (topology) or absent
@@ -163,9 +181,13 @@ Result<std::unordered_map<std::string, format::GroupEntry>> plan_commit_groups(
             if (meta == nullptr)
                 return SFS_ERR(TensorNotInBufferLayout, "tensor missing from target", tensor);
 
+            const auto trailing = trailing_elems(meta->shape, secondary->dim);
+            const auto secondary_unit_bytes =
+                static_cast<std::uint32_t>(trailing) * core::dtype_size(meta->dtype);
+
             auto expanded = codec::expand(other_gm.permutation, secondary->block);
             adapters.push_back(std::make_unique<ColumnPermutingSource>(
-                *base_for_encode, tensor, std::move(expanded), core::dtype_size(meta->dtype)));
+                *base_for_encode, tensor, std::move(expanded), secondary_unit_bytes));
             base_for_encode = adapters.back().get();
         }
 
