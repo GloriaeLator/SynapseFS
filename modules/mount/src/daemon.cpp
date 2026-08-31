@@ -153,14 +153,17 @@ core::Status Daemon::run() {
     // concurrent readers are what test_blockcache_race.cpp and
     // tests/concurrent_readers.cpp actually exercise, and single-flight fill
     // is only an interesting property under real concurrency.
+#ifdef fuse_loop_cfg_create
     struct fuse_loop_config* cfg = fuse_loop_cfg_create();
-    SFS_DEFER { if (cfg != nullptr) fuse_loop_cfg_destroy(cfg); };
+    SFS_DEFER { if (cfg != nullptr){ fuse_loop_cfg_destroy(cfg);} };
     if (cfg != nullptr) {
         fuse_loop_cfg_set_clone_fd(cfg, 0);
         fuse_loop_cfg_set_idle_threads(cfg, 10);
     }
-
     const int rc = fuse_session_loop_mt(im.session, cfg);
+#else
+    const int rc = fuse_session_loop(im.session);
+#endif
 
     if (fuse_session_exited(im.session) && rc == 0) {
         return core::Status{};

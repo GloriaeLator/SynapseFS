@@ -2,7 +2,7 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-
+#include <cstring>
 #include <synapsefs/util/file.hpp>
 
 namespace sfs::stio {
@@ -93,7 +93,7 @@ Result<std::size_t> StSource::read_raw(std::uint64_t data_offset, std::span<std:
         auto bytes = impl_->mapping.bytes();
         if (data_offset >= bytes.size()) return std::size_t{0};
         std::size_t take = std::min<std::size_t>(out.size(), bytes.size() - data_offset);
-        std::memcpy(out.data(), bytes.data() + data_offset, take);
+        ::memcpy(out.data(), bytes.data() + data_offset, take);
         return take;
     }
     auto n = util::pread_all(impl_->fd.get(), out, data_offset);

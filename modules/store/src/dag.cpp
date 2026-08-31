@@ -18,7 +18,7 @@ Status walk_commits(CommitStore& commits, std::span<const Oid> tips,
     for (const auto& tip : tips) {
         if (!seen.insert(tip).second) continue;
         auto c = commits.read(tip);
-        if (!c) return c.error();
+        if (!c) return std::unexpected(c.error());
         pq.emplace(c->timestamp, tip);
     }
 
@@ -26,7 +26,7 @@ Status walk_commits(CommitStore& commits, std::span<const Oid> tips,
         auto [ts, oid] = pq.top();
         pq.pop();
         auto c = commits.get_cached(oid);
-        if (!c) return c.error();
+        if (!c) return std::unexpected(c.error());
 
         bool keep_going = visit(oid, **c);
         if (!keep_going) continue;
@@ -34,7 +34,7 @@ Status walk_commits(CommitStore& commits, std::span<const Oid> tips,
         for (const auto& parent : (*c)->parents) {
             if (!seen.insert(parent).second) continue;
             auto pc = commits.read(parent);
-            if (!pc) return pc.error();
+            if (!pc) return std::unexpected(pc.error());
             pq.emplace(pc->timestamp, parent);
         }
     }

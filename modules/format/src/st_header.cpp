@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <synapsefs/core/endian.hpp>
+#include <synapsefs/core/error.hpp>
 
 namespace sfs::format {
 

@@ -2,7 +2,7 @@
 
 #include <fstream>
 #include <sstream>
-
+#include <cstring>
 #include <synapsefs/util/atomic_io.hpp>
 
 namespace fs = std::filesystem;
@@ -25,7 +25,7 @@ Status write_line(const fs::path& p, std::string_view line) {
     std::string data(line);
     data.push_back('\n');
     std::vector<std::byte> bytes(data.size());
-    std::memcpy(bytes.data(), data.data(), data.size());
+    ::memcpy(bytes.data(), data.data(), data.size());
     util::AtomicWriteOptions opts;
     opts.overwrite = true;
     if (auto r = util::atomic_write(p, bytes, opts); !r)

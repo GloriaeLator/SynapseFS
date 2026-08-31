@@ -19,11 +19,13 @@ void register_verify(CLI::App& app, int& exit_code);
 void register_branch(CLI::App& app, int& exit_code);
 void register_merge(CLI::App& app, int& exit_code);
 void register_gc(CLI::App& app, int& exit_code);
+void register_serve(CLI::App& app, int& exit_code);
+void register_push(CLI::App& app, int& exit_code);
+void register_pull(CLI::App& app, int& exit_code);
 #ifdef SFS_WITH_MOUNT
 void register_mount(CLI::App& app, int& exit_code);
 void register_unmount(CLI::App& app, int& exit_code);
 #endif
-void register_unimplemented(CLI::App& app, int& exit_code);
 }  // namespace sfs::app::cmd
 
 int main(int argc, char** argv) {
@@ -40,14 +42,13 @@ int main(int argc, char** argv) {
     sfs::app::cmd::register_branch(app, exit_code);
     sfs::app::cmd::register_merge(app, exit_code);
     sfs::app::cmd::register_gc(app, exit_code);
+    sfs::app::cmd::register_serve(app,exit_code);
+    sfs::app::cmd::register_push(app,exit_code);
+    sfs::app::cmd::register_pull(app,exit_code);
 #ifdef SFS_WITH_MOUNT
     sfs::app::cmd::register_mount(app, exit_code);
     sfs::app::cmd::register_unmount(app, exit_code);
 #endif
-    // push / pull / serve: net is unimplemented (modules/net has no .cpp).
-    // Wired here so they name what's missing and exit 7 instead of CLI11
-    // reporting an unknown subcommand.
-    sfs::app::cmd::register_unimplemented(app, exit_code);
 
     CLI11_PARSE(app, argc, argv);
 
