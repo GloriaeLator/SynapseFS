@@ -17,6 +17,7 @@
 #include <synapsefs/store/refs.hpp>
 
 #include "../exitcode.hpp"
+#include "../header_only_source.hpp"
 
 namespace sfs::app::cmd {
 
@@ -69,11 +70,18 @@ int run_mount(const std::string& revision, const std::string& mountpoint, bool f
     mount::FsOptions fs_opts;
     fs_opts.cache_bytes = cfg->cache_bytes;
 
+    // Function-local like blocks/manifest above (ReadCtx holds a raw pointer
+    // into it, and SynapseFs::create copies the ReadCtx as-is — see
+    // fs.cpp's Impl constructor). Best-effort; see header_only_source.hpp
+    // for why a parse failure here is not fatal.
+    auto topology = app::load_commit_topology(**blocks, *commit, *manifest);
+
     codec::ReadCtx ctx;
     ctx.blocks = blocks->get();
     ctx.manifest = &*manifest;
     ctx.history = &manifests;
     ctx.max_depth = cfg->max_chain_depth;
+    ctx.topology = topology ? &*topology : nullptr;
 
     auto fs = mount::SynapseFs::create(ctx, *manifest, fs_opts);
     if (!fs) {

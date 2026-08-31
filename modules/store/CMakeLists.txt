@@ -12,7 +12,11 @@ file(GLOB_RECURSE SFS_STORE_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DI
 sfs_add_module(store
     SOURCES ${SFS_STORE_SOURCES}
     HEADERS ${SFS_STORE_HEADERS}
-    DEPS    synapsefs::format;synapsefs::codec
+    # align added for commit_planner.hpp: the align<->codec glue that turns
+    # an align::MatchReport into per-tensor storage decisions belongs beside
+    # merge_logic.hpp, not duplicated into apps/sfs (which only orchestrates
+    # I/O -- repo config, refs, locking -- around calls into here).
+    DEPS    synapsefs::format;synapsefs::codec;synapsefs::align
     PRIVATE_DEPS )
 
 file(GLOB SFS_STORE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")

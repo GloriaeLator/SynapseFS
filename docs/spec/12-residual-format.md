@@ -216,6 +216,36 @@ Properties this shape guarantees, all of them graded:
   a loop over `read_range` writing to a file; it is about thirty lines and it
   is not a second implementation.
 
+### 6.1 A tensor with two permuted axes
+
+A tensor's dim-0 (output) axis is what this artifact's own `permutation`
+describes. Some tensors — a hidden layer's weight matrix, whose *input* axis
+is the *previous* layer's output — also have a **secondary**, non-dim-0 axis
+bound to a **different** permutation group. That group's own permutation is
+not stored in this artifact at all: it lives in whichever *other* tensor owns
+that group's dim-0 axis, in **that tensor's own diff artifact, from this same
+commit**.
+
+Reconstructing such a tensor is the pseudocode above, plus one step before
+the digest check: after `base_bytes` is gathered by the primary permutation,
+each row is *also* re-ordered along the secondary axis, using a permutation
+recovered by:
+
+1. looking up the tensor's secondary axis's group in the topology;
+2. finding which other tensor owns that group's dim-0 axis;
+3. reading **that tensor's own manifest entry, in this same commit** — not
+   the base commit, and not a field of this tensor's own artifact;
+4. if it is `delta`, fetching and parsing its diff artifact purely for its
+   `permutation` field (no recursion into resolving its own reconstructed
+   *bytes* — this is a single object fetch, independent of chain depth);
+5. if it is `full`, treating the secondary axis as identity — never an
+   error, because rule 5 below guarantees that is only possible when the
+   real permutation for that group truly was identity.
+
+Row-order and column-order permutation commute, so applying the secondary
+gather after the primary one (as above) produces the same bytes as applying
+it before, which is how the writer computes it (§8).
+
 ---
 
 ## 7. Snapshot policy
@@ -225,12 +255,23 @@ A group is written as `full` when any of:
 1. there is no base (first commit, or the group is new);
 2. the aligner reports `alignable: false`;
 3. `base.chain_depth + 1 > max_chain_depth`;
-4. `len(delta_bytes) > snapshot_alpha × len(full_bytes)`.
+4. `len(delta_bytes) > snapshot_alpha × len(full_bytes)`;
+5. the tensor has a secondary axis (§6.1) bound to a non-identity group, and
+   that group's own owning tensor is *not* being written as `delta` in this
+   same commit.
 
 Rule 4 is free to evaluate: the writer holds both byte strings at that point.
 It exists because XOR of two unrelated fp16 tensors is high-entropy noise that
 compresses to *larger* than the original — an unbounded-α design can make a
 repository grow faster than storing full copies.
+
+Rule 5 exists because a secondary axis's permutation has nowhere else to
+live: if the group it depends on isn't stored `delta` here, that permutation
+is computed, used to build this tensor's residual, and then unrecoverable —
+the exact silent-wrong-reconstruction bug §6.1 exists to prevent. Applying
+rule 5 can cascade: downgrading one group to `full` can, in turn, force
+another group that depends on *it* to `full` too. A writer MUST iterate rules
+1–5 to a fixed point, not stop after one pass.
 
 ---
 

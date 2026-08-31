@@ -20,6 +20,7 @@
 #include <synapsefs/store/refs.hpp>
 
 #include "../exitcode.hpp"
+#include "../header_only_source.hpp"
 
 namespace sfs::app::cmd {
 
@@ -113,11 +114,18 @@ int run_checkout(const std::string& revision, const std::string& output) {
 
     std::filesystem::path dest(output);
 
+    // Best-effort: absent for the placeholder topology every commit stores
+    // until alignment is wired into `commit`, which is fine — a tensor can
+    // only need it if one was successfully parsed at commit time (see
+    // header_only_source.hpp).
+    auto topology = app::load_commit_topology(**blocks, *commit, *manifest);
+
     codec::ReadCtx ctx;
     ctx.blocks = blocks->get();
     ctx.manifest = &*manifest;
     ctx.history = &manifests;
     ctx.max_depth = cfg->max_chain_depth;
+    ctx.topology = topology ? &*topology : nullptr;
 
     auto writer = stio::StWriter::create(dest, *manifest);
     if (!writer) {

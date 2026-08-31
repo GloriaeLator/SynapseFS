@@ -81,10 +81,88 @@ Result<std::vector<std::byte>> gather_base_bytes(const ReadCtx& base_ctx,
     return out;
 }
 
+// A tensor's SECONDARY (non-dim-0) axis, if it has one and it isn't
+// pinned/identity, is bound to a DIFFERENT permutation group than the one
+// this diff artifact's own `permutation` field describes. That group's
+// permutation isn't stored here — it lives in whichever OTHER tensor owns
+// that group's dim-0 axis, in ITS OWN diff artifact, from this SAME commit
+// (`ctx.manifest`, not `base_ctx`). This is a single same-commit object
+// fetch, not a walk through commit history — independent of chain_depth
+// entirely, unlike the primary base recursion above.
+//
+// Returns an empty vector for "no secondary axis, or it's pinned/identity —
+// nothing to do", the same convention gather_base_bytes uses for Identity.
+Result<std::vector<std::uint32_t>> resolve_secondary_permutation(const ReadCtx& ctx,
+                                                                 const format::TensorDiff& tdiff) {
+    if (ctx.topology == nullptr) return std::vector<std::uint32_t>{};
+
+    const auto tit = ctx.topology->tensors.find(tdiff.shape_name);
+    if (tit == ctx.topology->tensors.end()) return std::vector<std::uint32_t>{};
+
+    const core::AxisBinding* secondary = nullptr;
+    for (const auto& ax : tit->second.axes) {
+        if (ax.dim != 0) { secondary = &ax; break; }
+    }
+    if (secondary == nullptr) return std::vector<std::uint32_t>{};  // single-axis tensor
+
+    const auto* pg = ctx.topology->find_group(secondary->group);
+    if (pg != nullptr && pg->pinned) return std::vector<std::uint32_t>{};  // identity
+
+    // Whichever tensor owns `secondary->group` via ITS OWN dim-0 axis is
+    // where that group's permutation, for this commit, is recorded —
+    // commit_planner.cpp's naming: the group's "owning" tensor.
+    std::string owner_name;
+    for (const auto& [name, axes] : ctx.topology->tensors) {
+        for (const auto& ax : axes.axes) {
+            if (ax.dim == 0 && ax.group == secondary->group) { owner_name = name; break; }
+        }
+        if (!owner_name.empty()) break;
+    }
+    if (owner_name.empty())
+        return SFS_ERR(Internal, "no tensor owns secondary axis group", secondary->group);
+
+    if (ctx.manifest == nullptr)
+        return SFS_ERR(Internal, "ReadCtx missing manifest for secondary axis lookup");
+    const auto* owner_group = ctx.manifest->find_group(owner_name);
+    if (owner_group == nullptr)
+        return SFS_ERR(MalformedObject, "secondary axis owner missing from manifest", owner_name);
+
+    if (owner_group->mode != format::GroupMode::Delta) {
+        // Full here means the owning group's real permutation was never
+        // persisted — commit_planner.cpp's write-side invariant guarantees
+        // this only happens when that permutation IS identity. Trusting
+        // that invariant rather than erroring is deliberate: it's the same
+        // invariant that made this tensor eligible for Delta at all.
+        return std::vector<std::uint32_t>{};
+    }
+    if (!owner_group->diff_block)
+        return SFS_ERR(MalformedObject, "secondary axis owner missing diff_block", owner_name);
+
+    auto owner_bytes = ctx.blocks->get(*owner_group->diff_block, ObjectKind::Diff);
+    if (!owner_bytes) return std::unexpected(owner_bytes.error());
+    auto owner_artifact = format::parse_diff_artifact(*owner_bytes);
+    if (!owner_artifact) return std::unexpected(owner_artifact.error());
+
+    if (owner_artifact->header.permutation.kind == format::PermKind::Identity)
+        return std::vector<std::uint32_t>{};
+
+    auto owner_perm = format::read_permutation(owner_artifact->header.permutation,
+                                              owner_artifact->payload);
+    if (!owner_perm) return std::unexpected(owner_perm.error());
+
+    return expand(*owner_perm, secondary->block);
+}
+
 // One tensor's contribution to a Delta read: the frame loop from spec 12 §6,
 // clipped to [local_offset, local_offset + out.size()) within THIS tensor's
 // own byte range, writing into the corresponding slice of `out`.
-Result<std::size_t> read_tensor_range(const ReadCtx& base_ctx, const format::DiffHeader& header,
+//
+// `ctx` is the ORIGINAL (target-commit) context — needed for
+// resolve_secondary_permutation's same-commit lookup — while `base_ctx` is
+// where the primary base recursion actually reads from (the parent commit's
+// manifest, or deeper).
+Result<std::size_t> read_tensor_range(const ReadCtx& ctx, const ReadCtx& base_ctx,
+                                      const format::DiffHeader& header,
                                       std::span<const std::byte> payload,
                                       const format::TensorDiff& tdiff,
                                       std::string_view base_group_name, std::uint64_t local_offset,
@@ -116,6 +194,15 @@ Result<std::size_t> read_tensor_range(const ReadCtx& base_ctx, const format::Dif
         expanded_perm = expand(*group_perm, block);
     }
 
+    // Resolved once per tensor, not per frame — it doesn't vary by frame.
+    auto secondary_perm = resolve_secondary_permutation(ctx, tdiff);
+    if (!secondary_perm) return std::unexpected(secondary_perm.error());
+    const std::uint32_t elem_bytes = core::dtype_size(tdiff.dtype);
+    if (!secondary_perm->empty() && unit_bytes != secondary_perm->size() * elem_bytes) {
+        return SFS_ERR(BlockFactorMismatch, "secondary axis length does not match row width",
+                       tdiff.shape_name);
+    }
+
     std::size_t written = 0;
     const std::uint64_t want_end = local_offset + out.size();
     for (const auto& frame : tdiff.frames) {
@@ -129,6 +216,25 @@ Result<std::size_t> read_tensor_range(const ReadCtx& base_ctx, const format::Dif
         auto base_bytes = gather_base_bytes(base_ctx, base_group_name, expanded_perm,
                                            frame.unit_begin, frame.unit_end, unit_bytes);
         if (!base_bytes) return std::unexpected(base_bytes.error());
+
+        // Column-permute each row by the secondary group's permutation, on
+        // top of the row-gather gather_base_bytes just did. Row-gather and
+        // column-gather commute (result[i,j] = base[perm_row[i],
+        // perm_col[j]] either way), so doing this AFTER the primary gather
+        // rather than folded into it — the way diff_encoder.cpp's WRITE-side
+        // ColumnPermutingSource does it BEFORE — produces the identical
+        // bytes.
+        if (!secondary_perm->empty()) {
+            const std::uint64_t row_count = frame.unit_end - frame.unit_begin;
+            std::vector<std::byte> reordered(base_bytes->size());
+            std::vector<std::byte> scratch(unit_bytes);
+            for (std::uint64_t r = 0; r < row_count; ++r) {
+                std::span<const std::byte> row(base_bytes->data() + r * unit_bytes, unit_bytes);
+                permute_units(scratch, row, *secondary_perm, elem_bytes);
+                std::memcpy(reordered.data() + r * unit_bytes, scratch.data(), unit_bytes);
+            }
+            *base_bytes = std::move(reordered);
+        }
 
         const std::uint64_t frame_bytes_raw = frame_end - frame_begin;
         std::vector<std::byte> decompressed(frame_bytes_raw);
@@ -211,7 +317,8 @@ Result<std::size_t> read_delta_range(const ReadCtx& ctx, const format::GroupEntr
     ReadCtx base_ctx = ctx;
     base_ctx.manifest = *base_manifest;
 
-    return read_tensor_range(base_ctx, header, payload, *tdiff, group.base->group, offset, out);
+    return read_tensor_range(ctx, base_ctx, header, payload, *tdiff, group.base->group, offset,
+                            out);
 }
 
 Result<std::size_t> read_range_impl(const ReadCtx& ctx, std::string_view group_name,
