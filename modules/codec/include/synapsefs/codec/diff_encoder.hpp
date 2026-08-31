@@ -21,7 +21,12 @@
 namespace sfs::codec {
 
 struct EncodeOptions {
-    format::ResidualKind residual  = format::ResidualKind::XorAfterPermute;
+    // Winner of the six-candidate experiment (docs/tradeoffs.md §1.4,
+    // ADR 0005): zigzag(b-a) + no transform beat XOR and both byte-level
+    // transforms on BOTH ratio and decompress throughput on the fine-tune
+    // pair, the only one of the three measured pairs with real signal to
+    // discriminate on.
+    format::ResidualKind residual  = format::ResidualKind::ZigzagAfterPermute;
     format::Transform    transform = format::Transform::None;
     format::Codec        codec     = format::Codec::Zstd;
     CompressOptions      compress;
@@ -41,8 +46,19 @@ struct EncodeResult {
     double                 ratio = 0.0;
 };
 
-/// Encode one permutation group. `base` and `target` are streamed, never fully
-/// resident.
+/// Encode one manifest group. `group` IS the tensor's name — a manifest group
+/// is always exactly one tensor (apps/sfs/cmd/commit.cpp: "every tensor is
+/// stored as its own singleton Full group"), never several. `permutation` is
+/// the array for whichever permutation group that tensor's OWN dim-0 (output)
+/// axis is bound to in `topology` — the caller resolves which permutation
+/// group that is and looks up its array; this function only needs the result.
+///
+/// A tensor's OTHER axes (e.g. a hidden layer's weight matrix also has an
+/// input axis bound to the PREVIOUS layer's permutation group) are the
+/// caller's concern: reconstructing one correctly needs `base`'s bytes
+/// pre-permuted along that axis (e.g. via an input-permuting ITensorSource
+/// adapter) before calling this function. `base` and `target` are streamed,
+/// never fully resident.
 [[nodiscard]] core::Result<EncodeResult> encode_group(
     core::ITensorSource& base, core::ITensorSource& target, const core::Topology&,
     std::string_view group, std::span<const std::uint32_t> permutation,
