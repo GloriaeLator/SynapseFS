@@ -8,7 +8,7 @@
 #include <cctype>
 #include <fcntl.h>
 #include <fstream>
-#include <iomanip>s
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <stdexcept>

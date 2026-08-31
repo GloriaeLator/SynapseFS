@@ -4,6 +4,7 @@
 
 #include <synapsefs/util/atomic_io.hpp>
 #include <synapsefs/util/file.hpp>
+#include <cstring>
 
 namespace fs = std::filesystem;
 
@@ -125,7 +126,7 @@ Result<std::size_t> LooseStore::read_range(const Oid& oid, ObjectKind expected_k
         std::uint64_t within = abs_off - chunk_start;
         std::size_t take =
             std::min<std::size_t>(want - done, static_cast<std::size_t>(chunk_len - within));
-        std::memcpy(out.data() + done, chunk_buf.data() + within, take);
+        ::memcpy(out.data() + done, chunk_buf.data() + within, take);
         done += take;
     }
 
@@ -134,7 +135,7 @@ Result<std::size_t> LooseStore::read_range(const Oid& oid, ObjectKind expected_k
 
 Status LooseStore::verify_block(const Oid& oid, ObjectKind expected_kind) {
     auto payload = get(oid, expected_kind);  // get() already does a full-object hash check
-    if (!payload) return payload.error();
+    if (!payload) return std::unexpected(payload.error());
     return {};
 }
 

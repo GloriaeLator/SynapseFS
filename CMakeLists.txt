@@ -60,6 +60,10 @@ endif()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(json-c REQUIRED IMPORTED_TARGET json-c)
 
 if(SFS_BUILD_MOUNT)
   find_package(FUSE3 REQUIRED)

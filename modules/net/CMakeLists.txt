@@ -15,7 +15,7 @@ sfs_add_module(net
     SOURCES ${SFS_NET_SOURCES}
     HEADERS ${SFS_NET_HEADERS}
     DEPS    synapsefs::store
-    PRIVATE_DEPS )
+    PRIVATE_DEPS OpenSSL::Crypto;PkgConfig::json-c)
 
 file(GLOB SFS_NET_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
 foreach(t IN LISTS SFS_NET_TESTS)

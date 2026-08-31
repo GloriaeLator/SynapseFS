@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <synapsefs/core/endian.hpp>
+#include <synapsefs/core/error.hpp>
 
 namespace sfs::format {
 
@@ -106,7 +107,7 @@ Result<StHeader> parse_st_header(std::span<const std::byte> file_prefix) {
     return hdr;
 }
 
-Status validate_buffer_layout(std::span<const BufferEntry> entries, std::uint64_t header_extent,
+core::Status validate_buffer_layout(std::span<const BufferEntry> entries, std::uint64_t header_extent,
                               std::uint64_t total_bytes) {
     std::uint64_t cursor = header_extent;
     for (std::size_t i = 0; i < entries.size(); ++i) {

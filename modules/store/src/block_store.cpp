@@ -1,9 +1,13 @@
 #include <synapsefs/store/block_store.hpp>
 
+#include <atomic>
+#include <cstring>
+#include <unistd.h>
+
 #include <synapsefs/store/loose.hpp>
 #include <synapsefs/util/atomic_io.hpp>
+#include <synapsefs/util/bits.hpp>
 #include <synapsefs/util/file.hpp>
-
 namespace fs = std::filesystem;
 
 namespace sfs::store {
@@ -141,7 +145,7 @@ public:
         format::ObjectHeader hdr;
         hdr.kind = kind_;
         hdr.compression = format::Compression::None;
-        hdr.chunk_log2 = core::log2_exact(chunk_bytes_);
+        hdr.chunk_log2 = util::log2_exact(chunk_bytes_);
         hdr.payload_len = expected_len_;
         hdr.stored_len = expected_len_;
         hdr.chunk_count = static_cast<std::uint32_t>(digests_.size() / core::kOidBytes);
@@ -230,7 +234,7 @@ private:
         auto d = core::digest(chunk_buf_);
         std::size_t base = digests_.size();
         digests_.resize(base + core::kOidBytes);
-        std::memcpy(digests_.data() + base, d.data(), core::kOidBytes);
+        ::memcpy(digests_.data() + base, d.data(), core::kOidBytes);
         chunk_buf_.clear();
     }
 

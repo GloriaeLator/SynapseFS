@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <random>
+#include <cstring>
 
 #include <synapsefs/util/file.hpp>
 
@@ -166,7 +167,7 @@ std::expected<bool, std::error_code> atomic_replace_if(const fs::path& dest,
     }
 
     std::vector<std::byte> bytes(desired.size());
-    std::memcpy(bytes.data(), desired.data(), desired.size());
+    ::memcpy(bytes.data(), desired.data(), desired.size());
     AtomicWriteOptions o = opts;
     o.overwrite = true;
     if (auto r = atomic_write(dest, bytes, o); !r) return std::unexpected(r.error());
