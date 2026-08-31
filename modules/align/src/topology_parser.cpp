@@ -134,13 +134,21 @@ core::Status walk_layers(const core::ITensorSource& src, const json& layers,
                 }
             }
 
-        } else if (t == "batchnorm2d") {
+        } else if (t == "batchnorm2d" || t == "layernorm") {
+            // layernorm shares batchnorm2d's handling: same
+            // prefix.weight/prefix.bias affine-term naming, unioned into the
+            // preceding layer's output group the same way (Relation::
+            // NormFollows). It never has running_mean/running_var -- the
+            // per-suffix meta() check below already tolerates a missing
+            // tensor (originally for exporters that omit BN's running
+            // stats), so those two iterations simply no-op here rather than
+            // needing a separate branch.
             if (!current_axis.has_value()) {
-                return SFS_ERR(TopologyParse, "batchnorm2d with no preceding conv2d/linear", prefix);
+                return SFS_ERR(TopologyParse, t + " with no preceding conv2d/linear", prefix);
             }
             for (const char* suffix : {".weight", ".bias", ".running_mean", ".running_var"}) {
                 const std::string name = prefix + suffix;
-                if (src.meta(name) == nullptr) continue;  // some exporters omit running stats
+                if (src.meta(name) == nullptr) continue;  // some exporters omit running stats; layernorm always does
                 const std::uint64_t len = src.meta(name)->shape.at(0);
                 const std::uint32_t h = register_axis(st, name, 0, len);
                 SFS_TRY_VOID(st.uf.unite(h, *current_axis));  // Relation::NormFollows

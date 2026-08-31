@@ -67,6 +67,14 @@ public:
     [[nodiscard]] double identity_cost() const noexcept;
     [[nodiscard]] double assignment_cost(std::span<const std::uint32_t> perm) const noexcept;
 
+    /// Expected cost of assigning target units to base units uniformly at
+    /// random: mean of every entry, scaled to the same "sum over n rows"
+    /// units as identity_cost() (each of the n rows contributes its
+    /// row-mean in expectation). The data-derived "these two checkpoints
+    /// have no relation at all" baseline confidence::assess() calibrates
+    /// against, in place of a fixed constant.
+    [[nodiscard]] double random_cost() const noexcept;
+
 private:
     std::uint32_t      n_ = 0;
     std::vector<float> values_;

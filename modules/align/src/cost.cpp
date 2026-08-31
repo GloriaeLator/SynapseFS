@@ -67,6 +67,13 @@ double CostMatrix::identity_cost() const noexcept {
     return total;
 }
 
+double CostMatrix::random_cost() const noexcept {
+    if (n_ == 0) return 0.0;
+    double total = 0.0;
+    for (float v : values_) total += v;
+    return total / static_cast<double>(n_);
+}
+
 double CostMatrix::assignment_cost(std::span<const std::uint32_t> perm) const noexcept {
     double total = 0.0;
     const std::uint32_t limit = std::min<std::uint32_t>(n_, static_cast<std::uint32_t>(perm.size()));

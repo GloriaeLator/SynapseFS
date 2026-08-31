@@ -318,7 +318,23 @@ core::Result<GroupMatch> match_group_sparse(core::ITensorSource& target, core::I
     torch::Tensor C_identity = SFS_TRY(sparse_true_cost(target, base, topo, group, solved, identity_cand, opts.row_tile));
     const double identity_cost = C_identity.sum().item<double>();
 
-    Confidence conf = assess(achieved_cost, identity_cost, n, distinct, conf_opts);
+    // random_cost: Monte Carlo estimate of the "matched by chance" baseline
+    // (CostMatrix::random_cost()'s dense-path exact mean is unavailable here
+    // by design -- the whole point of this path is never materialising the
+    // full n x n matrix, ADR 0011). A handful of random permutations, scored
+    // with the same sparse_true_cost used for identity_cost above, is cheap
+    // relative to the fingerprint/auction work already done and averages out
+    // most of the per-permutation noise.
+    constexpr int kRandomBaselineSamples = 4;
+    double random_cost_sum = 0.0;
+    for (int s = 0; s < kRandomBaselineSamples; ++s) {
+        torch::Tensor random_cand = torch::randperm(n_i64, torch::kLong).unsqueeze(1);
+        torch::Tensor C_random = SFS_TRY(sparse_true_cost(target, base, topo, group, solved, random_cand, opts.row_tile));
+        random_cost_sum += C_random.sum().item<double>();
+    }
+    const double random_cost = random_cost_sum / static_cast<double>(kRandomBaselineSamples);
+
+    Confidence conf = assess(achieved_cost, identity_cost, random_cost, n, distinct, conf_opts);
 
     gm.identity = false;
     gm.alignable = conf.verdict != Alignability::NotAlignable;

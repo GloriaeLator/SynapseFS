@@ -139,13 +139,13 @@ int main(int argc, char** argv) {
 
     // DIAGNOSTIC ONLY -- temporarily disable the NotAlignable confidence gate
     // so gm.permutation is populated (and thus checkable against ground
-    // truth) even when cost_normalized is above the default 0.85 cutoff.
+    // truth) even when cost_normalized is above the random-baseline cutoff.
     // This tells us whether the LAP solver is finding the right assignment
-    // and just getting discarded by an uncalibrated threshold, or whether
-    // the assignment itself is wrong. Revert before this is anything but a
-    // one-off investigation.
+    // and just getting discarded by the gate, or whether the assignment
+    // itself is wrong. Revert before this is anything but a one-off
+    // investigation.
     align::MatchOptions diag_opts;
-    diag_opts.confidence.normalized_cost_threshold = 1e9;
+    diag_opts.confidence.random_baseline_margin = 1e9;
     align::Matcher matcher(*base, *target, *topo, diag_opts);
     auto report = matcher.run();
     if (!report) {

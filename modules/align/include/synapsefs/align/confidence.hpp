@@ -24,11 +24,17 @@
 namespace sfs::align {
 
 struct ConfidenceOptions {
-    /// Achieved assignment cost divided by the identity assignment's cost.
-    /// Above this, the group is reported not alignable. Calibrate on Day 3
-    /// against known-unrelated pairs and record the value in the docs — a
-    /// threshold nobody can justify is worse than no threshold.
-    double normalized_cost_threshold = 0.85;
+    /// How much of the gap between a perfect match (normalized cost 0) and
+    /// this pair's OWN random-assignment baseline (normalized cost of
+    /// matching target to base units by chance, see CostMatrix::random_cost)
+    /// the achieved cost must close to count as alignable, e.g. 0.9 means
+    /// "must beat 90% of the way from perfect down to random chance".
+    /// Replaces a single fixed cost-ratio constant: what a given normalized
+    /// cost value MEANS depends on the metric and architecture, but "close to
+    /// what a random pairing would score, for this exact pair" is comparable
+    /// in the same frame everywhere, so the cutoff no longer needs
+    /// per-metric recalibration the way a flat threshold did.
+    double random_baseline_margin = 0.9;
 
     /// Below this fraction of units having a distinct best match, treat the
     /// group as degenerate: still alignable, but flagged.
@@ -42,11 +48,16 @@ struct Confidence {
     double        cost_raw = 0.0;
     double        cost_normalized = 0.0;
     double        identity_cost = 0.0;
+    double        random_cost = 0.0;
+    double        random_normalized = 0.0;   ///< the effective threshold was random_normalized * margin
     std::uint32_t distinct_matches = 0;
     std::string   reason;   ///< human-facing, goes in the artifact and the log
 };
 
-[[nodiscard]] Confidence assess(double achieved_cost, double identity_cost,
+/// `random_cost`: CostMatrix::random_cost() (dense path) or a Monte Carlo
+/// estimate over a few random permutations via sparse_true_cost (sparse
+/// path) -- see match_group/match_group_sparse.
+[[nodiscard]] Confidence assess(double achieved_cost, double identity_cost, double random_cost,
                                 std::uint32_t n, std::uint32_t distinct_matches,
                                 const ConfidenceOptions& = {});
 
