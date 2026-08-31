@@ -109,6 +109,57 @@ ratio is at its floor regardless of choice. **Decision: `zigzag_after_permute`
 + `Transform::None` is the default in `EncodeOptions`** (see
 [ADR 0005](adr/0005-residual-encoding.md), now Accepted).
 
+### 1.4.1 The conv case — measured on `tiny_resnet` (~6k params, fp16, two conv layers)
+
+`tiny_mlp` above only ever exercises rank-2 (Linear) tensors — every axis a
+permutation touches is the tensor's last dimension. `tiny_resnet`
+(`fixtures/gen_resnet.py`: conv2d → batchnorm2d → relu → conv2d →
+batchnorm2d → relu → maxpool2d → flatten → linear) has a real rank-4 case:
+`3.weight`, shape `[24, 16, 3, 3]`, whose in-channel axis (dim 1) depends on
+the *first* conv's output group and is **not** the tensor's last dimension —
+the exact shape that surfaced a real bug in three independent places
+(`store::commit_planner`'s `ColumnPermutingSource`, `codec::reconstruct`'s
+secondary-axis gather, and this very bench tool's own `gather_axis`) before
+each was fixed to account for the trailing `kh×kw` block that has to move
+with each in-channel index rather than being treated as a bare scalar.
+
+Command: `bench_residual_codec --pair tiny_resnet_step0.safetensors,tiny_resnet_permuted.safetensors --topology tiny_resnet_topology.json --permutation tiny_resnet_permuted.permutation.json --json`
+
+**Permuted-only pair** (`tiny_resnet_step0` → `tiny_resnet_permuted`, pure
+permutation, `3.weight` included): ratio **0.00158** across all six
+candidates — the same near-zero floor as `tiny_mlp`'s headline case, this
+time with a real rank-4 tensor in the mix. Baseline plain-zstd-of-target:
+0.9328. `3.weight` alone is over half of this fixture's 12026 naive bytes, so
+this is a meaningful confirmation, not just "didn't crash": had the fix been
+wrong rather than absent, `3.weight`'s residual would be high-entropy noise
+from comparing misaligned bytes, and would have dominated the ratio back
+toward ~1.0 instead of the ~0.0016 measured.
+
+**Fine-tune pair** (`tiny_resnet_step0` → `tiny_resnet_step1`, identity
+permutation, no alignment needed): best is again `zigzag(b-a)` + bitshuffle
+at ratio 0.8276, decompress 444 MB/s — consistent with `tiny_mlp`'s finding
+that `zigzag` beats `a^b` on real (not purely-permuted) deltas, though the
+winning transform differs from the MLP case (bitshuffle here vs. none there)
+— worth another look once a larger conv fixture is measured, since transform
+choice may be shape-dependent in a way a single small fixture can't settle.
+
+| Residual | Transform | Ratio | Decompress MB/s |
+|---|---|---|---|
+| `a ^ b` | none | 0.8505 | 234 |
+| `a ^ b` | byte-plane | 0.8524 | 449 |
+| `a ^ b` | bitshuffle | 0.8773 | 409 |
+| `zigzag(b-a)` | none | 0.8303 | 464 |
+| `zigzag(b-a)` | byte-plane | 0.8290 | 356 |
+| `zigzag(b-a)` | bitshuffle | **0.8276** | 444 |
+
+Dev-box standalone build, same caveats as §1.4 (not the graded machine, AVX-512
+kernel this time since Phase 4 landed — `"isa": "avx512"` in the raw output).
+Default (`zigzag` + none) is not the CNN-optimal row here, but the gap to the
+actual winner (0.8303 → 0.8276) is small next to how much smaller this
+fixture is than a real checkpoint; not enough on its own to change the
+project-wide default picked in §1.4 without a larger conv fixture to confirm
+the pattern holds.
+
 ### 1.5 LAP fallback crossover — **PENDING**
 
 | n | Exact (JV) ms | Greedy + 2-swap ms | Permutation accuracy, greedy |

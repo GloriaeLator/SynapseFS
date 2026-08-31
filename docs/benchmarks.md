@@ -82,14 +82,21 @@ python3 bench/scripts/residual_ratio.py build/release/bench-out
 | Fine-tune, 1 epoch | 115456 | 94624 | 0.8196 | best of six (`zigzag`+`none`); plain-zstd-of-target baseline is 0.9173 |
 | Fine-tune, converged | _TBD_ | _TBD_ | _TBD_ | fixture not generated yet — needs a longer simulated training run |
 | Unrelated checkpoints | 115456 | 115468 | 1.0001 | Fell back to worse-than-raw, as ADR 0005 warns — `full` storage confirmed necessary |
+| Permuted-only, **conv** (`tiny_resnet`) | 12026 | 19 | **0.00158** | Same headline claim, this time with a real rank-4 (conv) tensor — see `docs/tradeoffs.md` §1.4.1 |
 
 The permuted-only row is the demonstration that the whole project exists for.
 Measured first, on `tiny_mlp` (~58k params, fp16) via `fixtures/gen_mlp.py` +
-`fixtures/permute.py` and a standalone dev-box build of
-`bench/residual_codec.cpp` (g++ 14.2 / MSYS2 UCRT64, scalar kernel only —
-**not** the graded machine, re-measure once AVX2/AVX512 kernels land and this
-builds under the real CMake release preset). Command:
-`residual_codec --fixtures-dir fixtures/out --json`.
+`fixtures/permute.py`, then again on `tiny_resnet` (~6k params, two conv
+layers) via `fixtures/gen_resnet.py`, using a standalone dev-box build of
+`bench/residual_codec.cpp` (g++ 14.2 / MSYS2 UCRT64 for the MLP numbers,
+AVX-512 kernel for the conv numbers — **not** the graded machine either way,
+re-measure once this builds under the real CMake release preset). The conv
+fixture matters beyond "another data point": it exercises the one case
+(a conv weight's in-channel axis, which is not the tensor's last dimension)
+that a Linear-only fixture structurally cannot — and did in fact surface a
+real bug (fixed) in the multi-axis permutation path before this number was
+measured. Command:
+`residual_codec --pair tiny_resnet_step0.safetensors,tiny_resnet_permuted.safetensors --topology tiny_resnet_topology.json --permutation tiny_resnet_permuted.permutation.json --json`.
 
 ### Codec experiment — six numbers
 
