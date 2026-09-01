@@ -1,33 +1,29 @@
 /// `sfs commit <file>` — stores a .safetensors checkpoint as a new commit.
 ///
-/// Real alignment now: --topology's config.json is parsed (align::
-/// topology_parser), and for a NON-root commit the parent checkpoint is
-/// reconstructed (app::ReconstructedTensorSource, streamed through the same
-/// codec::read_range every read path uses), matched against the new
-/// checkpoint (align::Matcher), and turned into per-tensor Full/Delta
-/// decisions (store::plan_commit_groups) — the commit_planner.cpp glue this
-/// branch built earlier finally has a caller. A root commit (no parent) has
-/// nothing to diff against and stays Full-only, same as before, but now
-/// stores a REAL parsed topology when one is available instead of always a
-/// placeholder — so the *next* commit has something real to align against.
+/// Alignment against the parent commit runs when all three are true: there
+/// IS a parent (a root commit has nothing to diff against — ADR 0004: a
+/// version control system must be able to store a checkpoint given nothing
+/// but the checkpoint), a topology parses (a real config.json, or none at
+/// all — see read_topology_bytes's note on why "none at all" and "an empty
+/// {} placeholder" must NOT be treated the same by the parser), and the
+/// caller didn't pass --no-align. Otherwise every tensor is stored as its
+/// own singleton Full group, exactly as this file did before alignment
+/// existed — the documented, well-defined fallback, not a degraded mode.
 ///
-/// Any failure in the alignment/planning path (Matcher, plan_commit_groups,
-/// or loading the parent's own topology/data) falls back to the old
-/// Full-only behaviour with a warning on stderr, rather than failing the
-/// commit outright: losing a dedup opportunity is recoverable, refusing to
-/// store a checkpoint at all is not.
+/// store::plan_commit_groups is the align <-> codec glue (see its own header
+/// for the six things it does); this file's job is just to gather what it
+/// needs — a real base ITensorSource for the parent (commit_tensor_source.hpp),
+/// a parsed core::Topology, and a completed align::MatchReport — and to keep
+/// doing the two things that were never alignment's job: computing the
+/// file's sha256 witness and storing the topology object itself.
 
 #include <CLI/CLI.hpp>
 
-#include <algorithm>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <optional>
-#include <unordered_map>
 
-#include <synapsefs/align/matcher.hpp>
 #include <synapsefs/align/topology_parser.hpp>
 #include <synapsefs/core/repo_config.hpp>
 #include <synapsefs/format/commit.hpp>
@@ -42,37 +38,42 @@
 #include <synapsefs/store/manifest_store.hpp>
 #include <synapsefs/store/refs.hpp>
 
+#include "../commit_tensor_source.hpp"
 #include "../exitcode.hpp"
 #include "../header_only_source.hpp"
-#include "../reconstructed_source.hpp"
 
 namespace sfs::app::cmd {
 
 namespace {
 
-/// The bytes to STORE as this commit's topology object: the real config.json
-/// if one was given (or found alongside the checkpoint), else the canonical
-/// "{}" placeholder — unchanged from before. Kept separate from what gets
-/// PARSED (see below): parse_topology treats "{}" as a real-but-empty config
-/// and hard-errors ("config.json has no 'layers' array"), whereas a
-/// genuinely empty span takes its documented inference path instead. This
-/// function's job is only ever "what do we persist", not "what do we feed
-/// the parser".
-core::Result<std::vector<std::byte>> load_topology_bytes(const std::string& topology_path,
-                                                          const std::filesystem::path& checkpoint_path) {
-    std::filesystem::path candidate = topology_path.empty()
-        ? checkpoint_path.parent_path() / "config.json"
-        : std::filesystem::path(topology_path);
+std::filesystem::path topology_candidate_path(const std::string& topology_path,
+                                              const std::filesystem::path& checkpoint_path) {
+    return topology_path.empty() ? checkpoint_path.parent_path() / "config.json"
+                                 : std::filesystem::path(topology_path);
+}
+
+/// Raw bytes of the user's config.json, or an EMPTY vector if none exists.
+/// Used for two different things that must NOT share one sentinel value:
+///   - storing the Topology object verbatim (store_topology, below), where
+///     "{}" has always been the placeholder for "nothing provided", and
+///   - driving align::parse_topology, where an empty span means "no
+///     config" and takes the documented shape-inference fallback (every
+///     tensor gets its own pinned singleton group — always succeeds), while
+///     a two-byte "{}" object is NOT empty and hits parse_topology's
+///     `cfg.contains("layers")` check, which is a hard TopologyParse error.
+///     Reusing the "{}" placeholder for both would turn "no config.json"
+///     into a commit failure, which is wrong — see header_only_source.hpp's
+///     own note on this exact distinction for checkout/mount.
+core::Result<std::vector<std::byte>> read_topology_bytes(
+    const std::string& topology_path, const std::filesystem::path& checkpoint_path) {
+    auto candidate = topology_candidate_path(topology_path, checkpoint_path);
 
     std::error_code ec;
     if (!topology_path.empty() && !std::filesystem::exists(candidate, ec)) {
         return SFS_ERR(NoSuchFile, "topology file not found", candidate.string());
     }
-
     if (!std::filesystem::exists(candidate, ec)) {
-        static constexpr char kEmpty[] = "{}";
-        return std::vector<std::byte>(reinterpret_cast<const std::byte*>(kEmpty),
-                                      reinterpret_cast<const std::byte*>(kEmpty) + 2);
+        return std::vector<std::byte>{};  // nothing found: empty, deliberately not "{}"
     }
 
     std::ifstream f(candidate, std::ios::binary);
@@ -84,83 +85,19 @@ core::Result<std::vector<std::byte>> load_topology_bytes(const std::string& topo
     return bytes;
 }
 
-/// Reconstruct the parent commit, match it against `target`, and plan
-/// per-tensor Full/Delta storage. Isolated into one function so run_commit
-/// can fall back to Full-only on ANY failure here with a single call site,
-/// rather than threading a fallback through several nested branches.
-core::Result<std::unordered_map<std::string, format::GroupEntry>> plan_with_alignment(
-    store::BlockStore& blocks, store::CommitStore& commits, store::ManifestStore& manifests,
-    const core::Oid& parent, core::ITensorSource& target, const core::Topology& topo,
-    const core::RepoConfig& cfg) {
-    auto parent_commit = commits.read(parent);
-    if (!parent_commit) return std::unexpected(parent_commit.error());
-
-    auto parent_manifest = manifests.read(parent_commit->manifest);
-    if (!parent_manifest) return std::unexpected(parent_manifest.error());
-
-    auto parent_header_bytes = blocks.get(parent_manifest->file.header_block, core::ObjectKind::Header);
-    if (!parent_header_bytes) return std::unexpected(parent_header_bytes.error());
-
-    auto parent_st_header = format::parse_st_header(*parent_header_bytes);
-    if (!parent_st_header) return std::unexpected(parent_st_header.error());
-
-    // Best-effort: absent for a parent stored under the old always-"{}"
-    // behaviour, in which case every one of its groups is Full and
-    // codec::read_range never needs a topology to reconstruct them anyway.
-    auto parent_topo = app::load_commit_topology(blocks, *parent_commit, *parent_manifest);
-
-    codec::ReadCtx parent_ctx;
-    parent_ctx.blocks = &blocks;
-    parent_ctx.manifest = &*parent_manifest;
-    parent_ctx.history = &manifests;
-    parent_ctx.max_depth = cfg.max_chain_depth;
-    parent_ctx.topology = parent_topo ? &*parent_topo : nullptr;
-
-    app::ReconstructedTensorSource base_src(parent_ctx, std::move(*parent_st_header));
-
-    std::unordered_map<std::string, store::ParentTensorInfo> parent_info;
-    for (const auto& [tensor, g] : parent_manifest->groups) {
-        parent_info[tensor] = store::ParentTensorInfo{parent, g.chain_depth};
-    }
-
-    align::Matcher matcher(base_src, target, topo);
-    auto report = matcher.run();
-    if (!report) return std::unexpected(report.error());
-
-    return store::plan_commit_groups(base_src, target, topo, *report, parent_info, blocks, cfg);
-}
-
-/// Store every tensor as its own Full singleton group — the only thing
-/// possible with no base to diff against (root commit), and the fallback
-/// when the real alignment path below fails for any reason. Reads by BYTE
-/// range (read_raw), same as the original always-Full implementation, not
-/// by output unit — a tensor's unit count is shape[0], which is 0 for a
-/// genuinely scalar (0-dim) tensor, and read_units(name, 0, 0, ...) would
-/// silently copy nothing for one.
-core::Status commit_full_only(store::BlockStore& blocks, stio::StSource& source,
-                              format::Manifest& manifest) {
-    std::vector<std::byte> tbuf;
-    for (const auto& entry : source.buffer_layout()) {
-        tbuf.resize(static_cast<std::size_t>(entry.nbytes));
-        auto n = source.read_raw(entry.off, tbuf);
-        if (!n) return std::unexpected(n.error());
-        if (*n != tbuf.size())
-            return SFS_ERR(Io, "short read on tensor", entry.tensor);
-
-        auto block_oid = blocks.put(core::ObjectKind::Raw, tbuf);
-        if (!block_oid) return std::unexpected(block_oid.error());
-
-        format::GroupEntry g;
-        g.mode = format::GroupMode::Full;
-        g.block = *block_oid;
-        g.chain_depth = 0;
-        manifest.groups[entry.tensor] = g;
-    }
-    return {};
+/// Store the topology object for this commit. Commit::topology is not
+/// optional (docs/spec/10 §3) — a repo that has never seen a real topology
+/// still needs every commit to satisfy that shape, hence the "{}" fallback.
+core::Result<core::Oid> store_topology(store::BlockStore& blocks,
+                                       std::span<const std::byte> topology_bytes) {
+    if (!topology_bytes.empty()) return blocks.put(core::ObjectKind::Topology, topology_bytes);
+    static constexpr char kEmpty[] = "{}";
+    return blocks.put(core::ObjectKind::Topology, std::as_bytes(std::span(kEmpty, 2)));
 }
 
 int run_commit(const std::string& file, const std::string& message, const std::string& author_opt,
-              const std::string& topology_path) {
+              const std::string& topology_path, const std::vector<std::string>& pin_output,
+              const std::vector<std::string>& pin_input, bool lenient_topology, bool no_align) {
     auto paths = core::RepoPaths::discover(std::filesystem::current_path());
     if (!paths) {
         std::cerr << "error: not a synapsefs repository\n";
@@ -234,30 +171,33 @@ int run_commit(const std::string& file, const std::string& message, const std::s
         return exit_code_for(header_oid.error());
     }
 
+    // ---- Topology: parse once, regardless of whether alignment ends up
+    // running — a broken --topology should fail the commit even on a root
+    // commit, rather than silently storing garbage that surprises the
+    // first real diff later. ----
+    auto topo_bytes = read_topology_bytes(topology_path, checkpoint_path);
+    if (!topo_bytes) {
+        std::cerr << "error: " << topo_bytes.error().to_string() << "\n";
+        return exit_code_for(topo_bytes.error());
+    }
+
+    align::ParseOptions parse_opts;
+    parse_opts.pinned_output_tensors = pin_output;
+    parse_opts.pinned_input_tensors = pin_input;
+    parse_opts.strict = !lenient_topology;
+
+    auto target_topology = align::parse_topology(**source, *topo_bytes, parse_opts);
+    if (!target_topology) {
+        std::cerr << "error: config.json: " << target_topology.error().to_string() << "\n";
+        return exit_code_for(target_topology.error());
+    }
+
     format::Manifest manifest;
     manifest.file.name = checkpoint_path.filename().string();
     manifest.file.header_block = *header_oid;
     manifest.file.total_bytes = (*source)->total_bytes();
 
-    // Pass 1, always: the sha256 witness and the buffer layout need every
-    // tensor's raw bytes regardless of how each group ends up stored. No
-    // blocks.put() here — Full-only storage (commit_full_only, below) reads
-    // tensors a second time rather than holding all of them in memory at
-    // once (ADR 0008: a checkpoint is never fully resident).
-    std::vector<std::byte> tbuf;
     for (const auto& entry : (*source)->buffer_layout()) {
-        tbuf.resize(static_cast<std::size_t>(entry.nbytes));
-        auto n = (*source)->read_raw(entry.off, tbuf);
-        if (!n) {
-            std::cerr << "error: " << n.error().to_string() << "\n";
-            return exit_code_for(n.error());
-        }
-        if (*n != tbuf.size()) {
-            std::cerr << "error: short read on tensor " << entry.tensor << "\n";
-            return ExitCode::Failure;
-        }
-        sha.update(tbuf);
-
         format::BufferEntry be;
         be.tensor = entry.tensor;
         be.off = entry.off;
@@ -265,56 +205,132 @@ int run_commit(const std::string& file, const std::string& message, const std::s
         be.group = entry.tensor;
         manifest.buffer.push_back(std::move(be));
     }
+
+    const bool use_alignment = !no_align && parent.has_value();
+    std::unordered_map<std::string, format::GroupEntry> group_entries;
+
+    if (use_alignment) {
+        auto parent_commit = commits.read(*parent);
+        if (!parent_commit) {
+            std::cerr << "error: " << parent_commit.error().to_string() << "\n";
+            return exit_code_for(parent_commit.error());
+        }
+        auto parent_manifest = manifests.read(parent_commit->manifest);
+        if (!parent_manifest) {
+            std::cerr << "error: " << parent_manifest.error().to_string() << "\n";
+            return exit_code_for(parent_manifest.error());
+        }
+        auto parent_header_bytes =
+            (*blocks)->get(parent_manifest->file.header_block, core::ObjectKind::Header);
+        if (!parent_header_bytes) {
+            std::cerr << "error: " << parent_header_bytes.error().to_string() << "\n";
+            return exit_code_for(parent_header_bytes.error());
+        }
+        auto parent_header = format::parse_st_header(*parent_header_bytes);
+        if (!parent_header) {
+            std::cerr << "error: " << parent_header.error().to_string() << "\n";
+            return exit_code_for(parent_header.error());
+        }
+
+        // Best-effort, same as checkout/mount: absent only for a parent
+        // committed before alignment existed, or one whose own config
+        // didn't parse — never fatal here. A parent with no topology
+        // cannot have stored anything Delta with a secondary dependency
+        // (plan_commit_groups requires a topology to ever choose Delta), so
+        // a null base topology is always correct on read, never silently
+        // wrong.
+        auto parent_topology = app::load_commit_topology(**blocks, *parent_commit, *parent_manifest);
+
+        codec::ReadCtx base_ctx;
+        base_ctx.blocks = blocks->get();
+        base_ctx.manifest = &*parent_manifest;
+        base_ctx.history = &manifests;
+        base_ctx.max_depth = cfg->max_chain_depth;
+        base_ctx.topology = parent_topology ? &*parent_topology : nullptr;
+
+        app::CommitTensorSource base_source(std::move(*parent_header), base_ctx);
+
+        align::Matcher matcher(base_source, **source, *target_topology, align::MatchOptions{});
+        auto report = matcher.run();
+        if (!report) {
+            std::cerr << "error: alignment failed: " << report.error().to_string() << "\n";
+            return exit_code_for(report.error());
+        }
+
+        // Only tensors the PARENT actually has a group for get a base to
+        // diff against; a tensor new to this commit (absent from the
+        // parent's manifest) has no entry here and plan_commit_groups
+        // correctly falls it through to Full, matching ParentTensorInfo's
+        // own documented contract.
+        std::unordered_map<std::string, store::ParentTensorInfo> parent_info;
+        for (const auto& [tensor_name, ge] : parent_manifest->groups) {
+            store::ParentTensorInfo info;
+            info.parent_commit = *parent;
+            info.chain_depth = ge.chain_depth;
+            parent_info.emplace(tensor_name, info);
+        }
+
+        auto planned = store::plan_commit_groups(base_source, **source, *target_topology, *report,
+                                                  parent_info, **blocks, *cfg, codec::EncodeOptions{});
+        if (!planned) {
+            std::cerr << "error: " << planned.error().to_string() << "\n";
+            return exit_code_for(planned.error());
+        }
+        group_entries = std::move(*planned);
+
+        // plan_commit_groups already read every tensor once (from `base`
+        // for Delta groups, from `target` for Full ones); the file's sha256
+        // witness still needs its own pass over TARGET bytes in file order,
+        // since that is what reconstruction must reproduce regardless of
+        // how any individual tensor ended up stored.
+        std::vector<std::byte> tbuf;
+        for (const auto& entry : manifest.buffer) {
+            tbuf.resize(static_cast<std::size_t>(entry.nbytes));
+            auto n = (*source)->read_raw(entry.off, tbuf);
+            if (!n) {
+                std::cerr << "error: " << n.error().to_string() << "\n";
+                return exit_code_for(n.error());
+            }
+            if (*n != tbuf.size()) {
+                std::cerr << "error: short read on tensor " << entry.tensor << "\n";
+                return ExitCode::Failure;
+            }
+            sha.update(tbuf);
+        }
+    } else {
+        // No parent (root commit), or alignment explicitly disabled: every
+        // tensor stored Full, verbatim — one read per tensor, sha and the
+        // Raw block computed together, exactly as before alignment existed.
+        std::vector<std::byte> tbuf;
+        for (const auto& entry : manifest.buffer) {
+            tbuf.resize(static_cast<std::size_t>(entry.nbytes));
+            auto n = (*source)->read_raw(entry.off, tbuf);
+            if (!n) {
+                std::cerr << "error: " << n.error().to_string() << "\n";
+                return exit_code_for(n.error());
+            }
+            if (*n != tbuf.size()) {
+                std::cerr << "error: short read on tensor " << entry.tensor << "\n";
+                return ExitCode::Failure;
+            }
+            sha.update(tbuf);
+
+            auto block_oid = (*blocks)->put(core::ObjectKind::Raw, tbuf);
+            if (!block_oid) {
+                std::cerr << "error: " << block_oid.error().to_string() << "\n";
+                return exit_code_for(block_oid.error());
+            }
+
+            format::GroupEntry g;
+            g.mode = format::GroupMode::Full;
+            g.block = *block_oid;
+            g.chain_depth = 0;
+            group_entries[entry.tensor] = g;
+        }
+    }
+
+    for (auto& [name, ge] : group_entries) manifest.groups[name] = std::move(ge);
     manifest.file.sha256 = sha.finish_hex();
-
-    auto topo_bytes_for_storage = load_topology_bytes(topology_path, checkpoint_path);
-    if (!topo_bytes_for_storage) {
-        std::cerr << "error: " << topo_bytes_for_storage.error().to_string() << "\n";
-        return exit_code_for(topo_bytes_for_storage.error());
-    }
-    // "{}" (no real config given) parses as a hard error (missing 'layers'),
-    // where a genuinely empty span takes parse_topology's documented
-    // inference path instead — see load_topology_bytes's own comment.
-    static constexpr char kPlaceholder[] = "{}";
-    const bool has_real_topology =
-        !(topo_bytes_for_storage->size() == 2 &&
-         std::memcmp(topo_bytes_for_storage->data(), kPlaceholder, 2) == 0);
-    std::span<const std::byte> parse_bytes =
-        has_real_topology ? std::span<const std::byte>(*topo_bytes_for_storage)
-                          : std::span<const std::byte>{};
-
-    auto topo = align::parse_topology(**source, parse_bytes, align::ParseOptions{});
-    if (!topo) {
-        // Only the has_real_topology branch can fail (an empty span cannot,
-        // per parse_topology's own doc) -- i.e. the user handed us a real
-        // but malformed config.json. That is worth failing the commit over:
-        // silently ignoring a config the user explicitly asked for would be
-        // a worse surprise than an error naming the problem now.
-        std::cerr << "error: " << topo.error().to_string() << "\n";
-        return exit_code_for(topo.error());
-    }
-
-    bool planned = false;
-    if (parent) {
-        auto entries = plan_with_alignment(**blocks, commits, manifests, *parent, **source, *topo, *cfg);
-        if (entries) {
-            // format::Manifest::groups is a std::map (ordered); plan_commit_groups
-            // returns std::unordered_map -- different container types, so this
-            // has to move element-by-element rather than assign wholesale.
-            for (auto& [name, g] : *entries) manifest.groups[name] = std::move(g);
-            planned = true;
-        } else {
-            std::cerr << "warning: alignment failed (" << entries.error().to_string()
-                      << "); committing every tensor Full\n";
-        }
-    }
-
-    if (!planned) {
-        if (auto st = commit_full_only(**blocks, **source, manifest); !st) {
-            std::cerr << "error: " << st.error().to_string() << "\n";
-            return exit_code_for(st.error());
-        }
-    }
 
     if (auto st = manifest.validate(); !st) {
         std::cerr << "error: built an invalid manifest: " << st.error().to_string() << "\n";
@@ -327,7 +343,7 @@ int run_commit(const std::string& file, const std::string& message, const std::s
         return exit_code_for(manifest_oid.error());
     }
 
-    auto topology_oid = (*blocks)->put(core::ObjectKind::Topology, *topo_bytes_for_storage);
+    auto topology_oid = store_topology(**blocks, *topo_bytes);
     if (!topology_oid) {
         std::cerr << "error: " << topology_oid.error().to_string() << "\n";
         return exit_code_for(topology_oid.error());
@@ -348,14 +364,18 @@ int run_commit(const std::string& file, const std::string& message, const std::s
         return exit_code_for(commit_oid.error());
     }
 
-    const auto n_delta = std::count_if(manifest.groups.begin(), manifest.groups.end(),
-                                       [](const auto& kv) {
-                                           return kv.second.mode == format::GroupMode::Delta;
-                                       });
+    std::size_t delta_count = 0;
+    for (const auto& [name, ge] : manifest.groups) {
+        if (ge.mode == format::GroupMode::Delta) ++delta_count;
+    }
+
     std::cout << "[" << ref_name << " " << commit_oid->abbrev() << "] " << commit.message << "\n";
     std::cout << " " << manifest.buffer.size() << " tensor(s), " << manifest.file.total_bytes
               << " bytes";
-    if (planned) std::cout << ", " << n_delta << " delta group(s)";
+    if (use_alignment) {
+        std::cout << " (" << delta_count << " stored as deltas against "
+                  << parent->abbrev() << ")";
+    }
     std::cout << "\n";
     return ExitCode::Ok;
 }
@@ -367,6 +387,10 @@ void register_commit(CLI::App& app, int& exit_code) {
     static std::string message;
     static std::string author;
     static std::string topology;
+    static std::vector<std::string> pin_output;
+    static std::vector<std::string> pin_input;
+    static bool lenient_topology = false;
+    static bool no_align = false;
     auto* c = app.add_subcommand("commit", "Store a .safetensors checkpoint as a new commit");
     c->add_option("file", file, "Path to the .safetensors checkpoint")->required();
     c->add_option("-m,--message", message, "Commit message");
@@ -374,7 +398,21 @@ void register_commit(CLI::App& app, int& exit_code) {
     c->add_option("--topology", topology,
                   "Path to config.json describing the tensor topology "
                   "(default: <file's directory>/config.json if present)");
-    c->callback([&exit_code] { exit_code = run_commit(file, message, author, topology); });
+    c->add_option("--pin-output", pin_output,
+                  "Tensor whose output axis must never be permuted (e.g. a classifier "
+                  "head); repeatable");
+    c->add_option("--pin-input", pin_input,
+                  "Tensor whose input axis must never be permuted; repeatable");
+    c->add_flag("--lenient-topology", lenient_topology,
+                "Tolerate parts of config.json the parser can't model instead of failing "
+                "the commit");
+    c->add_flag("--no-align", no_align,
+                "Store every tensor Full, skipping weight-matching alignment against the "
+                "parent commit");
+    c->callback([&exit_code] {
+        exit_code = run_commit(file, message, author, topology, pin_output, pin_input,
+                               lenient_topology, no_align);
+    });
 }
 
 }  // namespace sfs::app::cmd
