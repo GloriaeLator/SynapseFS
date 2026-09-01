@@ -12,8 +12,18 @@ std::vector<NormTensorRef> find_norm_tensors(const core::Topology& topo, std::st
     // only if at least one of its rank-1 members is a running_mean or
     // running_var (which never come from anything but a norm layer); a
     // group with neither is presumed to have no norm layer, and its plain
-    // bias is left for cost.cpp's own outgoing-evidence handling rather than
-    // double-counted here.
+    // bias is left for build_features's own outgoing-evidence handling
+    // rather than double-counted here (that exclusion lives in matcher.cpp,
+    // keyed off this function's return value, not here).
+    //
+    // A LayerNorm-gauged group also has neither running_mean nor
+    // running_var, so it is INDISTINGUISHABLE from a plain-bias group by
+    // this signal and this function returns {} for it too: LayerNorm's
+    // weight/bias still enter the cost (via the same outgoing-evidence path
+    // an ordinary bias would), just without the "one discriminative scalar
+    // per unit" framing BatchNorm's running stats get here. No known
+    // structural signal in core::Topology distinguishes "LayerNorm's own
+    // weight/bias" from "the preceding layer's own bias" today.
     std::vector<NormTensorRef> members;
     bool has_running_stats = false;
 

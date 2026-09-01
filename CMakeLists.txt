@@ -50,8 +50,23 @@ include(SimdKernels)
 include(SfsAddModule)
 
 # Dependencies
+#
+# zstd::libzstd is what every module here links against, but the target
+# name a CONFIG package actually exports is not standardised: vcpkg's zstd
+# port exports zstd::libzstd directly, while Debian/Ubuntu's system
+# libzstd-dev package (found via find_package(zstd CONFIG) on a plain apt
+# install, no vcpkg involved) exports zstd::libzstd_shared /
+# zstd::libzstd_static instead. Normalise whichever was found to the one
+# name the rest of the build expects, falling back to pkg-config only if
+# neither CONFIG target exists at all.
 find_package(zstd CONFIG QUIET)
-if(NOT zstd_FOUND)
+if(TARGET zstd::libzstd)
+  # Already the expected name (vcpkg and some distros' packaging).
+elseif(TARGET zstd::libzstd_shared)
+  add_library(zstd::libzstd ALIAS zstd::libzstd_shared)
+elseif(TARGET zstd::libzstd_static)
+  add_library(zstd::libzstd ALIAS zstd::libzstd_static)
+else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(zstd REQUIRED IMPORTED_TARGET libzstd)
   add_library(zstd::libzstd ALIAS PkgConfig::zstd)

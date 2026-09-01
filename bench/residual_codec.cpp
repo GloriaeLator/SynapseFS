@@ -103,24 +103,48 @@ std::vector<std::uint32_t> expand_permutation(const std::vector<std::uint32_t>& 
     return out;
 }
 
-// Gather along axis `dim` of a (rows x cols) row-major tensor (cols == 1 for
-// a 1-D bias): out[...perm applied on dim...] = src[...]. Mirrors
-// fixtures/permute.py's np.take call for the 1-D and 2-D cases this fixture
-// set actually has.
+// Product of every dimension of `shape` AFTER `dim` — the size, in elements,
+// of the block that moves together with each index along `dim`. 1 when dim
+// is the last axis (every 1-D/2-D case this file originally shipped with);
+// kh*kw for a conv weight's in-channel axis (dim 1 of [out_c, in_c, kh, kw]),
+// which is NOT the last dimension. Same fix as commit_planner.cpp's
+// ColumnPermutingSource and reconstruct.cpp's resolve_secondary_permutation
+// — this bench tool has its own, independent copy of the same gather logic
+// and needed the identical correction once a rank > 2 fixture existed to
+// expose it.
+std::uint64_t trailing_elems(const std::vector<std::uint64_t>& shape, std::uint32_t dim) {
+    std::uint64_t t = 1;
+    for (std::size_t d = static_cast<std::size_t>(dim) + 1; d < shape.size(); ++d) t *= shape[d];
+    return t;
+}
+
+// Gather along axis `dim` of an (outer x perm_axis_len x trailing) row-major
+// tensor: out[...perm applied to the perm_axis_len-sized axis `dim`...] =
+// src[...], each gathered "unit" being `trailing` elements wide (1 for the
+// 1-D/2-D case, kh*kw for a conv weight's non-last axis). `rows`/`cols` name
+// the two axes this fixture set's tensors actually have: rows = shape[0],
+// cols = shape[1] when dim==1 (irrelevant when dim==0).
 std::vector<std::byte> gather_axis(std::span<const std::byte> src, std::uint64_t rows,
-                                   std::uint64_t cols, std::uint32_t elem_bytes,
-                                   std::uint32_t dim, const std::vector<std::uint32_t>& perm) {
+                                   std::uint64_t cols, std::uint64_t trailing,
+                                   std::uint32_t elem_bytes, std::uint32_t dim,
+                                   const std::vector<std::uint32_t>& perm) {
+    const std::uint64_t unit_bytes = trailing * elem_bytes;
     std::vector<std::byte> out(src.size());
     if (dim == 0) {
-        const std::uint64_t row_bytes = cols * elem_bytes;
+        // trailing_elems(shape, 0) is ALREADY product(shape[1:]) -- the
+        // whole per-row size (cols included, for rank > 2) -- so it IS
+        // row_bytes directly. Multiplying by `cols` again here would
+        // double-count cols for anything above rank 2 (harmless at rank 2,
+        // where trailing == cols already).
+        const std::uint64_t row_bytes = unit_bytes;
         for (std::uint64_t i = 0; i < rows; ++i)
             std::memcpy(out.data() + i * row_bytes,
                        src.data() + std::uint64_t{perm[i]} * row_bytes, row_bytes);
     } else {
         for (std::uint64_t i = 0; i < rows; ++i)
             for (std::uint64_t j = 0; j < cols; ++j)
-                std::memcpy(out.data() + (i * cols + j) * elem_bytes,
-                           src.data() + (i * cols + perm[j]) * elem_bytes, elem_bytes);
+                std::memcpy(out.data() + (i * cols + j) * unit_bytes,
+                           src.data() + (i * cols + perm[j]) * unit_bytes, unit_bytes);
     }
     return out;
 }
@@ -154,7 +178,8 @@ std::vector<std::byte> align_to_target(const std::string& name, std::span<const 
         const auto block = axis.value("block", 1u);
         const auto expanded = expand_permutation(perm, block);
         const auto dim = axis.at("dim").get<std::uint32_t>();
-        cur = gather_axis(cur, rows, cols, elem_bytes, dim, expanded);
+        const auto trailing = trailing_elems(shape, dim);
+        cur = gather_axis(cur, rows, cols, trailing, elem_bytes, dim, expanded);
     }
     return cur;
 }

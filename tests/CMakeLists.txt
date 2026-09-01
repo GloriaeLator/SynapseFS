@@ -8,10 +8,15 @@
 #   tamper             every single-byte tamper detected AND named
 #   crash_matrix       kill -9 anywhere leaves clean or explicitly refusing
 
-add_library(sfs_test_common INTERFACE)
-target_include_directories(sfs_test_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/common)
-target_link_libraries(sfs_test_common INTERFACE
-    synapsefs::core synapsefs::store synapsefs::codec Catch2::Catch2WithMain)
+# STATIC, not INTERFACE: common/harness.cpp needs somewhere to actually be
+# compiled. temprepo.hpp/fault_inject.hpp are still header-only-declared (no
+# .cpp yet) and stay unaffected by this either way.
+add_library(sfs_test_common STATIC common/harness.cpp)
+target_include_directories(sfs_test_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/common)
+target_link_libraries(sfs_test_common PUBLIC
+    synapsefs::core synapsefs::format synapsefs::stio synapsefs::store synapsefs::codec
+    Catch2::Catch2WithMain)
+sfs_set_warnings(sfs_test_common)
 
 file(GLOB SFS_INTEGRATION_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 

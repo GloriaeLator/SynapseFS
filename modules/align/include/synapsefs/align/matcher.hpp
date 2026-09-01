@@ -49,7 +49,7 @@ struct SparseMatchOptions {
     /// large-group case) the K=512 cost matrix is ~120 MB against the dense
     /// path's ~13.4 GB. A heuristic starting point, not an empirically
     /// calibrated one -- validate against real large checkpoints, the same
-    /// caveat ConfidenceOptions::normalized_cost_threshold carries.
+    /// caveat ConfidenceOptions::distinct_match_floor carries.
     int64_t max_K          = 512;
     std::uint32_t row_tile = 1024;   ///< rows per chunk when reading a huge tensor
 };

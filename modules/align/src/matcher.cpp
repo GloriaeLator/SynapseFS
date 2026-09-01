@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <unordered_set>
 #include <vector>
 
 #include <synapsefs/align/lap.hpp>
@@ -46,9 +47,23 @@ Result<FeatureBlock> build_features(core::ITensorSource& src, const core::Topolo
     };
     std::vector<Segment> segments;
 
+    // Norm tensors (BatchNorm's weight/bias/running_mean/running_var, and --
+    // once a group has any of those -- whatever plain bias shares its rank-1,
+    // single-axis-binding shape, see find_norm_tensors) are gathered ONCE,
+    // below, via their own scaled-per-scalar pass. They ALSO have an ordinary
+    // dim-0 axis binding to this group (that's how topology_parser.cpp wires
+    // NormFollows), which would otherwise make the generic "outgoing" loop
+    // right below pick them up too -- computed unconditionally (not gated on
+    // opts.include_norm_stats) so that disabling norm stats actually excludes
+    // them here rather than leaving them double-uncounted-but-still-present.
+    const std::vector<NormTensorRef> norm_members = find_norm_tensors(topo, group);
+    std::unordered_set<std::string> norm_tensor_names;
+    for (const auto& nm : norm_members) norm_tensor_names.insert(nm.tensor);
+
     for (const auto& [tensor, axes] : topo.tensors) {
         for (const auto& b : axes.axes) {
             if (b.group != group) continue;
+            if (b.dim == 0 && norm_tensor_names.contains(tensor)) continue;  // handled below instead
             const core::TensorMeta* meta = src.meta(tensor);
             if (meta == nullptr) return SFS_ERR(Internal, "topology tensor missing from source", tensor);
 
@@ -148,8 +163,9 @@ Result<FeatureBlock> build_features(core::ITensorSource& src, const core::Topolo
     if (opts.include_norm_stats) {
         // One 1-wide segment per norm tensor (weight/bias/running_mean/
         // running_var are all already 1 scalar per unit), gathered once for
-        // the whole group rather than per axis-binding.
-        for (const auto& norm : find_norm_tensors(topo, group)) {
+        // the whole group rather than per axis-binding -- and excluded from
+        // the generic "outgoing" loop above so each is counted exactly once.
+        for (const auto& norm : norm_members) {
             const core::TensorMeta* nm = src.meta(norm.tensor);
             if (nm == nullptr) continue;
             auto vals = SFS_TRY(read_rows_as_float(src, norm.tensor, 0, n, 1, nm->dtype));
@@ -258,6 +274,7 @@ Result<GroupMatch> Matcher::match_group(std::string_view group) {
     core::LapResult lap = SFS_TRY(solver->solve(cost.data(), n));
 
     const double identity_cost = cost.identity_cost();
+    const double random_cost = cost.random_cost();
     std::uint32_t distinct = 0;
     {
         for (std::uint32_t i = 0; i < n; ++i) {
@@ -278,7 +295,7 @@ Result<GroupMatch> Matcher::match_group(std::string_view group) {
         }
     }
 
-    Confidence conf = assess(lap.cost_raw, identity_cost, n, distinct, impl_->opts.confidence);
+    Confidence conf = assess(lap.cost_raw, identity_cost, random_cost, n, distinct, impl_->opts.confidence);
 
     gm.identity = false;
     gm.alignable = conf.verdict != Alignability::NotAlignable;
