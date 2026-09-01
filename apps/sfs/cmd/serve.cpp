@@ -2,13 +2,18 @@
 
 #include <iostream>
 #include <synapsefs/net/synapse_sync.hpp>
-
+#include <synapsefs/core/repo_config.hpp>
 #include "../exitcode.hpp"
 
 namespace sfs::app::cmd {
     namespace
     {
         int run_serve(int port){
+            auto paths = core::RepoPaths::discover(std::filesystem::current_path());
+    if (!paths) {
+        std::cerr << "error: not a synapsefs repository\n";
+        return ExitCode::NotARepository;
+    }
             net::serve(port);
             return ExitCode::Ok;
         }
