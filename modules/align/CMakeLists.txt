@@ -19,6 +19,14 @@ sfs_add_module(align
     # not part of align's interface.
     PRIVATE_DEPS nlohmann_json::nlohmann_json;${TORCH_LIBRARIES})
 target_compile_options(sfs_align PRIVATE ${TORCH_CXX_FLAGS})
+# ${TORCH_LIBRARIES} (find_package(Torch)'s legacy variable form, not an
+# imported target) carries library paths only -- unlike linking
+# Torch::Torch/`torch` directly, it does NOT propagate include directories,
+# so torch/torch.h was never reachable from sfs_align's actual compile
+# command. Confirmed by a real Docker build: "fatal error: torch/torch.h: No
+# such file or directory" even with find_package(Torch REQUIRED) succeeding
+# and TORCH_INCLUDE_DIRS populated correctly.
+target_include_directories(sfs_align PRIVATE ${TORCH_INCLUDE_DIRS})
 
 # tools/ is align's own test-support code, not the module's public library:
 # a whole-file-resident ITensorSource over a real .safetensors file, used to
