@@ -33,6 +33,27 @@ Status write_line(const fs::path& p, std::string_view line) {
     return {};
 }
 
+/// Resolve "refs/heads/<name>" or bare "<name>" to the same on-disk path.
+/// update()/delete_branch() and rev_parse() must all agree on this, or a ref
+/// written via one form and looked up via the other silently diverge. Before
+/// this helper, update() joined paths.refs_heads() with a still-prefixed
+/// "refs/heads/main" (never stripping the prefix the way rev_parse() does a
+/// few lines below it), writing every commit's branch update to
+/// .synapsefs/refs/heads/refs/heads/main -- a path nothing else ever read.
+/// The FIRST commit on any branch "succeeded" silently (nothing to conflict
+/// with yet); the SECOND then failed with "ref already exists", because
+/// resolve() correctly found no ref at the real path and returned
+/// RefNotFound, leaving commit_and_advance() believing this was another
+/// root commit -- caught by an actual two-commit run against a real,
+/// persisted repository (this bug needs the ref store round-tripped through
+/// separate process invocations to surface at all).
+fs::path branch_ref_path(const core::RepoPaths& paths, std::string_view name_or_ref) {
+    constexpr std::string_view kPrefix = "refs/heads/";
+    if (name_or_ref.substr(0, kPrefix.size()) == kPrefix)
+        return paths.refs_heads() / std::string(name_or_ref.substr(kPrefix.size()));
+    return paths.refs_heads() / std::string(name_or_ref);
+}
+
 }  // namespace
 
 RefStore::RefStore(core::RepoPaths paths) : paths_(std::move(paths)) {}
@@ -142,7 +163,7 @@ Result<std::vector<Ref>> RefStore::list_heads() const {
 
 Status RefStore::update(std::string_view ref_name, std::optional<Oid> expected,
                         const Oid& desired) {
-    fs::path p = paths_.refs_heads() / std::string(ref_name);
+    fs::path p = branch_ref_path(paths_, ref_name);
     std::error_code ec;
     bool exists = fs::exists(p, ec);
 
@@ -164,7 +185,7 @@ Status RefStore::create_branch(std::string_view name, const Oid& at) {
 }
 
 Status RefStore::delete_branch(std::string_view name, bool force) {
-    fs::path p = paths_.refs_heads() / std::string(name);
+    fs::path p = branch_ref_path(paths_, name);
     std::error_code ec;
     if (!fs::exists(p, ec))
         return SFS_ERR(RefNotFound, "branch does not exist", std::string(name));

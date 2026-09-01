@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <numeric>
 #include <set>
 #include <vector>
 
@@ -85,11 +86,15 @@ std::uint64_t trailing_elems(std::span<const std::uint64_t> shape, std::uint32_t
     return t;
 }
 
-// Step 1: a group counts as "moved" only if align found a genuine,
-// non-identity, alignable permutation for it. Pinned (topology) or absent
-// (no evidence gathered) both mean the same thing here: nothing to diff,
-// and — for a SECONDARY dependency specifically — nothing that needs its
-// permutation recorded anywhere to be recoverable on read.
+// Used for SECONDARY-dependency bookkeeping only (a tensor's non-dim-0 axis
+// bound to some OTHER group): a group counts as "moved" there only if align
+// found a genuine, non-identity, alignable permutation for it. Pinned
+// (topology) or absent (no evidence gathered) both mean the same thing:
+// nothing needs its permutation recorded anywhere to be recoverable on
+// read, and an IDENTITY secondary permutation needs no column-gather either
+// (there is nothing to reorder). Do NOT use this to decide whether a
+// group's OWN storage is worth attempting — see
+// group_has_no_alignment_evidence for that, and why the two must differ.
 bool group_is_effectively_identity(const core::Topology& topo, const align::MatchReport& report,
                                    const std::string& group) {
     const auto* g = topo.find_group(group);
@@ -97,6 +102,49 @@ bool group_is_effectively_identity(const core::Topology& topo, const align::Matc
     auto it = report.groups.find(group);
     if (it == report.groups.end()) return true;
     return it->second.identity || !it->second.alignable;
+}
+
+// Step 1: whether a group's OWN storage is even worth attempting to encode.
+// Pinned (topology says identity is the only legal permutation) or
+// unalignable/no-evidence groups have nothing encode_group could produce
+// that decide() would ever accept, so those are skipped. An IDENTITY result
+// is deliberately NOT skipped here, unlike group_is_effectively_identity
+// above: align genuinely computing "no reordering helps" is exactly what a
+// fine-tune step between two checkpoints looks like (no permutation drift,
+// just numerically nearby weights), and diff_encoder.hpp's own doc calls
+// the identity case out as "the common case for a fine-tune and worth its
+// own [zero-byte permutation] encoding" -- it is the raw BYTE residual
+// (zigzag/xor of near-identical fp16 values) that makes the delta small,
+// not the permutation. Skipping identity groups upfront, as this file did
+// before, meant encode_group -- and therefore codec::decide()'s actual
+// measured byte savings -- never ran for that case at all: every fine-tune
+// commit fell back to Full regardless of how compressible the real residual
+// would have been. First caught by a real `sfs commit` twice in a row
+// against a real fine-tune fixture pair, reporting "0 delta group(s)" when
+// docs/tradeoffs.md's own measured numbers say it shouldn't have.
+bool group_has_no_alignment_evidence(const core::Topology& topo, const align::MatchReport& report,
+                                     const std::string& group) {
+    const auto* g = topo.find_group(group);
+    if (g != nullptr && g->pinned) return true;
+    auto it = report.groups.find(group);
+    if (it == report.groups.end()) return true;
+    return !it->second.alignable;
+}
+
+// align::GroupMatch::permutation is documented as "empty means identity" --
+// a compact reporting convention Matcher uses so it never has to allocate a
+// full n-element array just to say "nothing moved". codec::write_permutation
+// (which encode_group calls) needs the opposite: a real, full-length
+// [0, 1, ..., n) array to detect identity FROM and to size the header's
+// PermutationRef::n correctly -- an empty span would silently record n=0
+// for a group that is not actually empty. This is the one seam where that
+// convention has to be materialised back out.
+std::vector<std::uint32_t> materialize_permutation(const align::GroupMatch& gm,
+                                                    std::uint32_t group_size) {
+    if (!gm.permutation.empty()) return gm.permutation;
+    std::vector<std::uint32_t> identity(group_size);
+    std::iota(identity.begin(), identity.end(), 0);
+    return identity;
 }
 
 // Every tensor whose dim-0 axis is bound to `group` — the same selection
@@ -151,12 +199,15 @@ Result<std::unordered_map<std::string, format::GroupEntry>> plan_commit_groups(
     const align::MatchReport& report,
     const std::unordered_map<std::string, ParentTensorInfo>& parent_info,
     core::IBlockStore& blocks, const core::RepoConfig& cfg, codec::EncodeOptions encode_opts) {
-    // ---- Phase A: encode every non-identity, alignable group once, and
-    // record its OWN (dependency-blind) storage decision. ----
+    // ---- Phase A: encode every group with real alignment evidence once
+    // (identity permutations included -- a fine-tune step is exactly an
+    // identity permutation with a compressible byte residual, see
+    // group_has_no_alignment_evidence's comment), and record its OWN
+    // (dependency-blind) storage decision. ----
     std::unordered_map<std::string, GroupPlan> plans;
 
     for (const auto& [group_name, perm_group] : topology.groups) {
-        if (group_is_effectively_identity(topology, report, group_name)) continue;
+        if (group_has_no_alignment_evidence(topology, report, group_name)) continue;
 
         const auto& gm = report.groups.at(group_name);
         auto members = tensors_owning_group(topology, group_name);
@@ -196,8 +247,13 @@ Result<std::unordered_map<std::string, format::GroupEntry>> plan_commit_groups(
         align_info.cost_raw = gm.cost_raw;
         align_info.cost_normalized = gm.cost_normalized;
 
+        // gm.permutation is empty exactly when gm.identity is true (align's
+        // reporting convention) -- encode_group/write_permutation need the
+        // real, full-length array instead (see materialize_permutation's
+        // comment).
+        const auto own_perm = materialize_permutation(gm, perm_group.size);
         auto encoded = codec::encode_group(*base_for_encode, target, topology, group_name,
-                                          gm.permutation, gm.alignable, align_info, encode_opts);
+                                          own_perm, gm.alignable, align_info, encode_opts);
         if (!encoded) return std::unexpected(encoded.error());
 
         bool has_base = false;

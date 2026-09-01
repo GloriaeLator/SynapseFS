@@ -1,0 +1,9 @@
+{
+  "layers": [
+    {"type": "linear"},
+    {"type": "relu"},
+    {"type": "linear"},
+    {"type": "relu"},
+    {"type": "linear"}
+  ]
+}
