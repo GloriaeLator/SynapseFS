@@ -15,7 +15,6 @@ namespace sfs::app::cmd{
     }
 
     void register_push(CLI::App& app, int& exit_code){
-        static std::string branch;
         static std::string remote_url;
         auto* c = app.add_subcommand("push","Push commit history to other user.");
         c->add_option("remote_url",remote_url,"http://ip:port Of the User to PUSH to.")->required();
