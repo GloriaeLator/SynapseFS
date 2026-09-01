@@ -162,11 +162,28 @@ sudo ./bench/scripts/drop_caches.sh
 ./build/release/bench/verify_time --repo <repo> --json
 ```
 
-| Repository | Objects | Bytes | `verify` | `verify --full` |
+| Repository | Objects | Bytes (`--full`) | `verify` | `verify --full` |
 |---|---|---|---|---|
-| 5 commits, small CNN | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| 5 commits, `tiny_mlp` | 7 | 115944 | 0.422 ms | 0.687 ms |
 | 10 commits, mid | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
 | 3 commits, 7B | _TBD_ | multi-GB | _TBD_ | _TBD_ |
+
+Measured with a standalone driver calling `store::verify`/`CommitStore`/
+`ManifestStore` directly (dev-box, WSL2 Ubuntu, real BLAKE3 — not the graded
+machine, and `bench_verify_time` doesn't exist as a real CMake target yet,
+see below). `ok=1`, 0 findings. `Bytes` is `VerifyReport::bytes_hashed` from
+the `--full` run specifically — the quick `verify` never hashes anything by
+design (spec: only `--full` re-hashes every chunk), so it's correctly 0 there
+and not shown as a separate column. This field was dead code until just now:
+declared in `verify.hpp` but never assigned in `verify.cpp` — fixed by
+accumulating `blocks.size_of(oid)` alongside each successful `verify_block()`
+call in the `--full` path, the only place bytes are actually re-hashed. A
+second, related bug surfaced fixing it: `objects_checked` was being
+double-counted for any object with a finding (incremented once in
+`check_block`, again in `add_finding`, which was also — incorrectly —
+counting non-object findings like a bad ref or a chain-depth mismatch as
+"objects"); removed the increment from `add_finding` entirely, since
+`check_block` is the only place actually enumerating objects.
 
 ### Hash function, on this machine
 
@@ -176,13 +193,16 @@ sudo ./bench/scripts/drop_caches.sh
 
 | Function | GB/s |
 |---|---|
-| SHA-256 | _TBD_ |
-| BLAKE3, 1 thread | _TBD_ |
-| BLAKE3, all cores | _TBD_ |
+| SHA-256 | 0.296 |
+| BLAKE3, 1 thread | 4.313 |
+| BLAKE3, all cores | _TBD_ — this codebase's BLAKE3 wrapper (`core::Hasher`/`core::digest`) only exposes single-threaded hashing, no multithreaded path to measure |
 
-Prototype machine gave 0.38 / 4.30 / 8.37. **If this machine has SHA-NI the gap
-will be much smaller** — record what it actually is, and revisit
-[ADR 0002](adr/0002-blake3-over-sha256.md) if SHA-256 wins.
+Prototype machine gave 0.38 / 4.30 / 8.37 — this dev-box run (0.296 / 4.313,
+1 GiB random buffer, WSL2 Ubuntu, real vendored BLAKE3) lands within a few
+percent of the prototype's single-thread numbers on both functions, a good
+consistency check even though this isn't the graded machine.
+[ADR 0002](adr/0002-blake3-over-sha256.md) stands: SHA-256 is not close to
+winning here.
 
 ---
 
@@ -197,12 +217,47 @@ sudo ./bench/scripts/drop_caches.sh
 
 | Access pattern | Throughput | p50 | p99 |
 |---|---|---|---|
-| Sequential read, whole file | _TBD_ | _TBD_ | _TBD_ |
-| `mmap` sequential | _TBD_ | _TBD_ | _TBD_ |
-| Random 4 KiB, depth 0 | _TBD_ | _TBD_ | _TBD_ |
-| Random 4 KiB, depth 5 | _TBD_ | _TBD_ | _TBD_ |
-| `load_file()` end to end | _TBD_ | — | — |
-| Baseline: same file on ext4 | _TBD_ | _TBD_ | _TBD_ |
+| Sequential read, whole file | 236.1 MB/s | — | — |
+| `mmap` sequential | 13132.4 MB/s | — | — |
+| Random 4 KiB, depth 0 | 3806.3 MB/s | 0.9 us | 1.8 us |
+| Random 4 KiB, depth 5 | _TBD_ — concurrent-depth variant not implemented in this pass | | |
+| `load_file()` end to end | _TBD_ — needs Python + torch, tests/e2e.py's job, not this bench | — | — |
+| Baseline: same file on ext4 | 174.6 MB/s | — | — |
+
+**Real numbers from a real mount, not a workaround** — the first time this
+project's FUSE daemon has actually been mounted and read from at all, via a
+standalone driver (`store`/`codec`/`mount` don't need align/Torch to build;
+`apps/sfs`'s CLI does, so this bypasses it and calls the same `store::`/
+`mount::` APIs directly). That attempt immediately surfaced a real,
+previously-undiscovered bug: `daemon.cpp` never passed a `max_read` mount
+option to `fuse_session_new()`, so this libfuse (3.14) rejected the mount
+outright once `fuse_ll.cpp`'s own `init()` tried to raise it — "init() and
+fuse_session_new() requested different maximum read size (131072 vs 0)".
+Fixed by passing `-omax_read=<N>` up front so both sides agree from the
+start; see `daemon.cpp`'s comment at the fix site.
+
+**Caveats, stated plainly rather than left implicit:**
+- **Not cold cache** — dropping caches needs `sudo`, which this session
+  can't run non-interactively. `FOPEN_KEEP_CACHE` is on by design (a commit
+  is immutable), so these are warm-cache numbers throughout, not the
+  §4 heading's own "cold cache" requirement.
+- **Fixture is small** (`mlp`, ~1.84 MB, 919k params) relative to a real
+  checkpoint, so absolute throughput here is dominated by fixed per-request
+  overhead and kernel page-cache effects, not sustained streaming
+  performance at scale — `mmap sequential`'s 13 GB/s in particular is not a
+  believable sustained number, just evidence the path works end to end.
+  Re-measure on a multi-GB fixture, cold cache, on the actual graded
+  machine before trusting these for anything but "it works."
+- **`Random 4 KiB, depth 5`** (concurrent readers) and **`load_file()`
+  end to end** are not measured here — the former needs a concurrency
+  dimension this pass didn't implement, the latter needs Python +
+  `safetensors.torch.load_file()`, a different test (`tests/e2e.py`)
+  entirely.
+- Dev-box (WSL2 Ubuntu), not the graded machine, and `bench_mmap_throughput`
+  doesn't exist as a real CMake target yet — `bench/CMakeLists.txt`
+  blanket-links `align` into every bench binary, so it's blocked the same
+  way `bench_residual_codec` was until that's resolved; this was built and
+  linked standalone instead.
 
 Report the ext4 baseline. A FUSE number without it is uninterpretable.
 

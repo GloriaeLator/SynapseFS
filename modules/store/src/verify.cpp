@@ -24,12 +24,19 @@ Result<VerifyReport> verify(core::IBlockStore& blocks, CommitStore& commits,
                             const VerifyOptions& opts) {
     VerifyReport report;
 
+    // Only records a finding. objects_checked is intentionally NOT bumped
+    // here: check_block below is the one place that actually enumerates
+    // objects, and already counts every one exactly once, pass or fail.
+    // A ref-resolution failure, an ancestor-invariant violation, or a
+    // chain-depth mismatch calls this too, and none of those are "one more
+    // object" -- bumping the counter here both double-counted a failing
+    // block's own check_block increment and inflated the count for findings
+    // that were never about a specific object at all.
     auto add_finding = [&](core::ErrKind kind, const Oid& obj, std::string detail,
                            std::optional<std::uint32_t> chunk = std::nullopt,
                            std::optional<std::string> group = std::nullopt) {
         report.findings.push_back(VerifyFinding{kind, obj, std::move(detail), chunk,
                                                  std::move(group)});
-        report.objects_checked++;
     };
 
     // (0) opts.repair: journal recovery needs a store::Journal bound to
@@ -84,6 +91,14 @@ Result<VerifyReport> verify(core::IBlockStore& blocks, CommitStore& commits,
             if (opts.full) {
                 if (auto vst = blocks.verify_block(oid, kind); !vst) {
                     add_finding(vst.error().kind, oid, std::string(what) + ": " + vst.error().what);
+                } else {
+                    // verify_block() re-hashes every chunk but only returns
+                    // pass/fail; size_of() is the only way to know how much
+                    // was actually hashed, since that's what "bytes_hashed"
+                    // is meant to report (spec: "--full: every chunk of
+                    // every reachable object" -- the quick path below never
+                    // hashes anything, so it contributes nothing here).
+                    if (auto sz = blocks.size_of(oid)) report.bytes_hashed += *sz;
                 }
             } else {
                 auto exists = blocks.contains(oid);

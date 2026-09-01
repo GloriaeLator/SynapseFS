@@ -102,10 +102,21 @@ core::Result<std::unique_ptr<Daemon>> Daemon::start(std::unique_ptr<SynapseFs> f
     // mount options here (allow_other is the one knob DaemonOptions/FsOptions
     // exposes; anything more exotic is a repo-config concern, not this
     // call's), so this is a small, fixed argument vector.
+    //
+    // max_read MUST be passed here, not just set later in fuse_ll.cpp's
+    // init() callback: this libfuse (3.14+) treats init() raising
+    // conn->max_read above whatever fuse_session_new() was told (0/default,
+    // if no -o max_read= option is given) as a fatal mismatch --
+    // "init() and fuse_session_new() requested different maximum read size"
+    // -- rather than the older, more permissive behaviour the comment in
+    // fuse_ll.cpp's init() ("max_read and readahead raised") assumed.
+    // First surfaced by an actual mount attempt; nothing in this build had
+    // ever exercised this path before.
     std::vector<std::string> argv_storage;
     argv_storage.push_back("sfs-mount");  // argv[0]; libfuse only uses it for -h/-V text
     if (im.opts.debug) argv_storage.push_back("-d");
     if (im.opts.fs.allow_other) argv_storage.push_back("-oallow_other");
+    argv_storage.push_back("-omax_read=" + std::to_string(im.opts.fs.max_read));
 
     std::vector<char*> argv;
     argv.reserve(argv_storage.size());
