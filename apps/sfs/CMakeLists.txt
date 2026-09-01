@@ -12,7 +12,7 @@ file(GLOB SFS_APP_SOURCES CONFIGURE_DEPENDS
 
 add_executable(sfs ${SFS_APP_SOURCES})
 
-target_link_libraries(sfs PRIVATE
+target_link_libraries(sfs ${Torch_LIBRARIES} PRIVATE
     synapsefs::core synapsefs::util synapsefs::format synapsefs::stio
     synapsefs::store synapsefs::align synapsefs::codec synapsefs::net
     CLI11::CLI11)

@@ -142,7 +142,13 @@ Result<std::vector<Ref>> RefStore::list_heads() const {
 
 Status RefStore::update(std::string_view ref_name, std::optional<Oid> expected,
                         const Oid& desired) {
-    fs::path p = paths_.refs_heads() / std::string(ref_name);
+    // Handle both "main" and "refs/heads/main" formats
+    std::string_view branch_name = ref_name;
+    if (ref_name.substr(0, 11) == "refs/heads/") {
+        branch_name = ref_name.substr(11);
+    }
+    
+    fs::path p = paths_.refs_heads() / std::string(branch_name);
     std::error_code ec;
     bool exists = fs::exists(p, ec);
 
@@ -164,7 +170,13 @@ Status RefStore::create_branch(std::string_view name, const Oid& at) {
 }
 
 Status RefStore::delete_branch(std::string_view name, bool force) {
-    fs::path p = paths_.refs_heads() / std::string(name);
+    // Handle both "main" and "refs/heads/main" formats
+    std::string_view branch_name = name;
+    if (name.substr(0, 11) == "refs/heads/") {
+        branch_name = name.substr(11);
+    }
+    
+    fs::path p = paths_.refs_heads() / std::string(branch_name);
     std::error_code ec;
     if (!fs::exists(p, ec))
         return SFS_ERR(RefNotFound, "branch does not exist", std::string(name));

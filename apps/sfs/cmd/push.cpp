@@ -2,16 +2,14 @@
 
 #include <iostream>
 
-#include <synapsefs/net/repository.hpp>
-#include <synapsefs/net/network.hpp>
+#include <synapsefs/net/synapse_sync.hpp>
 
 #include "../exitcode.hpp"
 
 namespace sfs::app::cmd{
     namespace{
-        int run_push(const std::string branch , const std::string remote_url){
-            net::Repository target = net::Repository(std::filesystem::current_path());
-            net::push_branch(target,remote_url,branch);
+        int run_push(const std::string remote_url){
+            net::push(remote_url);
             return ExitCode::Ok;
         }
     }
@@ -20,8 +18,7 @@ namespace sfs::app::cmd{
         static std::string branch;
         static std::string remote_url;
         auto* c = app.add_subcommand("push","Push commit history to other user.");
-        c->add_option("branch",branch,"Select Branch to Push")->required();
         c->add_option("remote_url",remote_url,"http://ip:port Of the User to PUSH to.")->required();
-        c->callback([&exit_code] {exit_code = run_push(branch,remote_url);});
+        c->callback([&exit_code] {exit_code = run_push(remote_url);});
     }
 }

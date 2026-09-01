@@ -2,16 +2,14 @@
 
 #include <iostream>
 
-#include <synapsefs/net/repository.hpp>
-#include <synapsefs/net/network.hpp>
+#include <synapsefs/net/synapse_sync.hpp>
 
 #include "../exitcode.hpp"
 
 namespace sfs::app::cmd{
     namespace{
         int run_pull(const std::string branch , const std::string remote_url){
-            net::Repository target = net::Repository(std::filesystem::current_path());
-            net::pull_branch(target,remote_url,branch);
+            net::pull(remote_url);
             return ExitCode::Ok;
         }
     }

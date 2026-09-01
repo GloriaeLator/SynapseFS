@@ -1,8 +1,7 @@
 #include <CLI/CLI.hpp>
 
 #include <iostream>
-#include <synapsefs/net/repository.hpp>
-#include <synapsefs/net/network.hpp>
+#include <synapsefs/net/synapse_sync.hpp>
 
 #include "../exitcode.hpp"
 
@@ -10,8 +9,7 @@ namespace sfs::app::cmd {
     namespace
     {
         int run_serve(int port){
-            net::Repository target = net::Repository(std::filesystem::current_path());
-            net::PeerServer(target, static_cast <uint16_t> (port)).serve_forever();
+            net::serve(port);
             return ExitCode::Ok;
         }
     } // namespace run_serves
