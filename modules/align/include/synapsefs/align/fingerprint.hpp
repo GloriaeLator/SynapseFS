@@ -1,7 +1,7 @@
 #pragma once
 /// \file fingerprint.hpp
 /// Quantile-sketch fingerprints and candidate generation for the large-group
-/// sparse alignment path (docs/adr/0011).
+/// sparse alignment path (docs/adr/0012).
 ///
 /// Ported from cpp/src/fingerprint.cpp with the algorithm unchanged: sorted-
 /// quantile fingerprints (no summation, so bit-invariant under permutation),

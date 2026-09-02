@@ -240,7 +240,7 @@ Result<GroupMatch> Matcher::match_group(std::string_view group) {
     if (n >= impl_->opts.sparse_crossover) {
         // A dense n x n cost matrix, and the greedy solver's O(n^2)
         // enumerate-and-sort, are not just slow at this size -- they do not
-        // fit in the PS's memory ceiling (docs/adr/0011). Bypass
+        // fit in the PS's memory ceiling (docs/adr/0012). Bypass
         // CostMatrix/ILapSolver entirely: fingerprint + sparse candidates +
         // Jacobi auction, mirroring cpp/src/dispatch.cpp's "synapse-forward"
         // branch.

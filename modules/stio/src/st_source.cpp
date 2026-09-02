@@ -107,9 +107,11 @@ Result<std::size_t> StSource::read_units(std::string_view name, std::uint64_t fi
     if (!m) return SFS_ERR(TensorNotInBufferLayout, "no such tensor", std::string(name));
 
     // Output units are rows along axis 0 by convention here: row_stride =
-    // nbytes / shape[0]. Callers that need a different axis go through
-    // row_iter's UnitReader, which is axis-aware; this is the raw primitive
-    // it is built on.
+    // nbytes / shape[0]. This does not support other axes -- a caller needing
+    // to slice along dim > 0 (e.g. align's cost-feature builder, for a
+    // Linear weight's input axis) cannot use this reader; see
+    // align::tools::SimpleStSource for how align works around that gap
+    // today.
     auto ub = m->unit_bytes(0);
     if (!ub) return std::unexpected(ub.error());
     std::uint64_t stride = *ub;

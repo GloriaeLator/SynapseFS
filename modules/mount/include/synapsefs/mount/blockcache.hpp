@@ -85,8 +85,14 @@ public:
     [[nodiscard]] Stats stats() const noexcept;
 
 private:
+    friend class FrameLease;
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    /// Drops one reference on `e`, under mu. Called from
+    /// FrameLease::~FrameLease()/operator= -- see FrameLease::Entry::refcount's
+    /// own comment (blockcache.cpp) for why this must not be lock-free.
+    void release(FrameLease::Entry* e) noexcept;
 };
 
 }  // namespace sfs::mount

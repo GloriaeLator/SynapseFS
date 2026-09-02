@@ -1,7 +1,7 @@
 /// Runs the matcher against a real .safetensors checkpoint pair with one
 /// hidden layer above MatchOptions::sparse_crossover, exercising the
 /// large-group sparse path (fingerprint + candidate generation + Jacobi
-/// auction, docs/adr/0011) end-to-end against real files -- not a hand-built
+/// auction, docs/adr/0012) end-to-end against real files -- not a hand-built
 /// core::Topology or an in-memory fake, and not the dense CostMatrix/
 /// ILapSolver path at all for that group.
 #include <catch2/catch_test_macros.hpp>

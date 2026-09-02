@@ -15,7 +15,7 @@
 /// case, and align::Matcher itself never calls the dense solvers at all
 /// above MatchOptions::sparse_crossover (8192) -- it switches to a
 /// completely different sparse fingerprint+auction algorithm there
-/// (docs/adr/0011), specifically because a dense n x n matrix stops fitting
+/// (docs/adr/0012), specifically because a dense n x n matrix stops fitting
 /// memory at that scale. So there is no real-system scenario where JV runs
 /// above the crossover, and no reason to pay an O(n^3) benchmark run to
 /// prove that; greedy is still measured up to 8192 to show it staying

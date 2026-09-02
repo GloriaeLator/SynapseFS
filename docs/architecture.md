@@ -31,10 +31,10 @@ the order.
 
 | Module | Owns | Depends on |
 |---|---|---|
-| `util` | atomic write, mmap, file handles, thread pool, CPUID, bit tricks, logging | — |
+| `util` | atomic write, mmap, file handles, CPUID, bit tricks, logging | — |
 | `core` | `Oid`, `Error`/`ErrKind`, `DType`, `Tensor` view, topology types, repo config, endian helpers, **all cross-module interfaces** | util |
-| `format` | encode/decode of every on-disk object: safetensors header, commit, manifest, tree, diff header, varint | core |
-| `stio` | lazy safetensors reading, byte-exact writing, row/unit iteration | format |
+| `format` | encode/decode of every on-disk object: safetensors header, commit, manifest, tree, diff header | core |
+| `stio` | lazy safetensors reading, byte-exact writing, axis-0 unit reads | format |
 | `store` | block store (loose + packfiles), commit/manifest stores, refs, journal, DAG walk, verify, merge, gc, lockfile | format, codec |
 | `align` | topology parser, alignment graph, cost, LAP, matcher, propagation, norm folding, confidence, out-of-core plan | stio, core |
 | `codec` | permutation application, diff encode/decode, **`reconstruct` / `read_range`**, residual kernels, chunking, compression, snapshot policy | format, util |
@@ -190,13 +190,13 @@ size.
 
 | Component | Model |
 |---|---|
-| CLI commands | single-threaded, except the aligner |
-| Aligner | `util::ThreadPool`, one tile per task, join before the group's LAP |
-| LAP solver | single-threaded per group; groups are independent and run in parallel |
-| Residual encode | one frame per task |
+| CLI commands | single-threaded, including the aligner |
+| Aligner | single-threaded: tile accumulation, group matching, and the LAP solve all run serially. A `util::ThreadPool` was planned for this (one tile per task, groups run in parallel) but was never implemented — declared, uncalled, and removed as dead code rather than left as a misleading claim |
+| LAP solver | single-threaded per group; groups are matched one at a time, not in parallel |
+| Residual encode | single-threaded: one frame at a time |
 | Mount daemon | libfuse's own thread pool; our state is the frame cache + interval table |
-| Frame cache | sharded mutex + per-frame single-flight; entries immutable once published |
-| `serve` | one thread per connection; the store is read-only during a session |
+| Frame cache | sharded mutex + per-frame single-flight; entries immutable once published — genuinely real, since the mount daemon is the one place actual concurrency exists |
+| `serve` | single-threaded today, not one-thread-per-connection as previously stated here |
 
 The only genuinely subtle concurrency in the project is the frame cache, which
 is why it has a dedicated TSan test (`test_blockcache_race.cpp`) and a

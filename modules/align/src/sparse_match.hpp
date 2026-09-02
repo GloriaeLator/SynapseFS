@@ -1,6 +1,6 @@
 #pragma once
 /// Internal to modules/align/src. Ties fingerprint.hpp + auction.hpp
-/// together into one group solve for the large-group path (docs/adr/0011),
+/// together into one group solve for the large-group path (docs/adr/0012),
 /// mirroring cpp/src/dispatch.cpp's "synapse-forward" branch: fingerprint +
 /// top-K candidates + sparse true cost + Jacobi auction, widening K and
 /// retrying if too many units end up unassigned, then an exact dense LAP

@@ -1,6 +1,6 @@
 #pragma once
 /// Internal to modules/align/src. The large-group sparse path (fingerprint +
-/// candidate generation + auction, docs/adr/0011) runs its tensor math on
+/// candidate generation + auction, docs/adr/0012) runs its tensor math on
 /// CUDA when available and falls back to CPU otherwise -- the PS's own
 /// stated 8 GB VRAM grading ceiling (docs/adr/0008, docs/benchmarks.md)
 /// implies a GPU is actually present in that environment, not just a limit

@@ -66,10 +66,21 @@ struct FrameLease::Entry {
     std::mutex              fill_mutex;
     std::condition_variable fill_cv;
 
-    // Reader refcount. Lock-free: incremented under FrameCache::Impl::mu
-    // (alongside the LRU touch, so the two stay consistent from the cache's
-    // point of view), decremented lock-free from FrameLease::~FrameLease().
-    // An entry with refcount > 0 is pinned; eviction must skip it.
+    // Reader refcount. Always changed under FrameCache::Impl::mu (see
+    // FrameCache::release() below) -- an earlier version decremented this
+    // lock-free from FrameLease::~FrameLease() specifically to avoid ever
+    // blocking a lease-drop on the cache-wide mutex, but that let
+    // evict_if_needed()'s refcount==0 check race a lease drop that wasn't
+    // synchronized with it at all: a waiter blocked in fill_cv.wait() (see
+    // get_or_fill) has no pin of its own while waiting, so a third thread's
+    // eviction, timed against an unrelated lease drop reaching zero, could
+    // free the entry out from under a still-waiting reader -- reproduced as
+    // both wrong bytes and outright SIGSEGV by
+    // test_blockcache_race.cpp's "racing fills on distinct keys" case under
+    // real eviction pressure. A brief mutex hold for one atomic decrement is
+    // not the blocking-on-I/O case this was originally trying to avoid (that
+    // risk is the fill() callback itself, never called here), so correctness
+    // wins this trade-off.
     std::atomic<std::uint32_t> refcount{0};
 
     // Position in the cache-wide LRU list; valid only while the entry is
@@ -79,11 +90,7 @@ struct FrameLease::Entry {
 
 FrameLease::~FrameLease() {
     if (entry_ == nullptr) return;
-    // Lock-free on purpose: dropping a lease must never block on I/O or on
-    // the cache-wide mutex. The entry becomes eviction-eligible the moment
-    // this reaches zero; the next get_or_fill's evict_if_needed() will see
-    // it under mu.
-    entry_->refcount.fetch_sub(1, std::memory_order_release);
+    owner_->release(entry_);
 }
 
 FrameLease::FrameLease(FrameLease&& o) noexcept
@@ -94,7 +101,7 @@ FrameLease::FrameLease(FrameLease&& o) noexcept
 
 FrameLease& FrameLease::operator=(FrameLease&& o) noexcept {
     if (this == &o) return *this;
-    if (entry_ != nullptr) entry_->refcount.fetch_sub(1, std::memory_order_release);
+    if (entry_ != nullptr) owner_->release(entry_);
     entry_ = o.entry_;
     owner_ = o.owner_;
     o.entry_ = nullptr;
@@ -171,6 +178,31 @@ struct FrameCache::Impl {
 FrameCache::FrameCache(std::uint64_t budget_bytes) : impl_(std::make_unique<Impl>(budget_bytes)) {}
 FrameCache::~FrameCache() = default;
 
+// Called from FrameLease::~FrameLease()/operator=. Under mu, unlike the
+// lock-free decrement this replaced: refcount must only ever change while mu
+// is held, the same invariant evict_if_needed()'s own refcount==0 check
+// relies on, or the two race (see refcount's own comment for the bug this
+// fixes). Not on the fill() callback's hot path -- fill() is never called
+// here -- so this is a single atomic decrement under a short-lived lock, not
+// the "never block on I/O" case the old lock-free design was guarding
+// against.
+void FrameCache::release(FrameLease::Entry* e) noexcept {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    const auto prev = e->refcount.fetch_sub(1, std::memory_order_relaxed);
+    if (prev == 1 && e->failed.load(std::memory_order_relaxed)) {
+        // Last pin on a failed fill just dropped. evict_if_needed() never
+        // reclaims this on its own -- it only ever considers ready == true
+        // entries -- so a failed-and-pinned placeholder that the miss path
+        // deferred erasing (see get_or_fill's failure branch) would
+        // otherwise wedge this key permanently instead of being retryable.
+        auto it = impl_->map.find(e->key);
+        if (it != impl_->map.end() && it->second.get() == e) {
+            impl_->lru.erase(e->lru_it);
+            impl_->map.erase(it);
+        }
+    }
+}
+
 core::Result<FrameLease> FrameCache::get_or_fill(
     const FrameKey& key, std::uint64_t size_hint,
     const std::function<core::Status(std::span<std::byte>)>& fill) {
@@ -197,8 +229,22 @@ core::Result<FrameLease> FrameCache::get_or_fill(
             return std::unexpected(err);
         }
 
-        // In flight: wait on the ENTRY's own condvar, never on the cache
-        // mutex, so other keys stay lock-free while this one fills.
+        // In flight: pin NOW, still under mu, before ever waiting -- a
+        // waiter that only pins after waking has zero protection for the
+        // entire time it's blocked in fill_cv.wait() below, and the filler's
+        // own pin (added when it publishes ready, then dropped whenever its
+        // own returned lease happens to go out of scope) is not guaranteed
+        // to still be held by the time this thread wakes. Without this,
+        // a third thread's concurrent evict_if_needed() can legally free
+        // this entry while a waiter is still asleep referencing it --
+        // confirmed via AddressSanitizer as a real, repeatable
+        // heap-use-after-free at the old post-wait refcount.fetch_add() call
+        // site, under exactly the eviction pressure
+        // test_blockcache_race.cpp's "racing fills on distinct keys" case
+        // creates. Pinning here means this entry can never satisfy
+        // evict_if_needed()'s refcount==0 test for as long as this thread
+        // is waiting on it, waiter or not.
+        e->refcount.fetch_add(1, std::memory_order_relaxed);
         impl_->single_flight_waits.fetch_add(1, std::memory_order_relaxed);
         lk.unlock();
 
@@ -211,15 +257,20 @@ core::Result<FrameLease> FrameCache::get_or_fill(
         }
 
         if (e->failed.load(std::memory_order_acquire)) {
+            // Drop the provisional pin through release(), not a raw
+            // decrement, to keep every refcount change mu-protected (see
+            // FrameLease::Entry::refcount's own comment).
+            release(e);
             return std::unexpected(e->fill_error);
         }
 
-        // Published while we waited. Re-take the cache mutex just long
-        // enough to pin it and refresh LRU order.
-        std::lock_guard<std::mutex> lk2(impl_->mu);
-        impl_->hits.fetch_add(1, std::memory_order_relaxed);
-        e->refcount.fetch_add(1, std::memory_order_relaxed);
-        impl_->touch(*e);
+        // Already pinned from before we started waiting -- just refresh LRU
+        // order under mu.
+        {
+            std::lock_guard<std::mutex> lk2(impl_->mu);
+            impl_->hits.fetch_add(1, std::memory_order_relaxed);
+            impl_->touch(*e);
+        }
         FrameLease lease;
         lease.entry_ = e;
         lease.owner_ = this;
@@ -255,11 +306,18 @@ core::Result<FrameLease> FrameCache::get_or_fill(
 
         // Don't leave a permanently-failed placeholder occupying the map: a
         // transient store error (e.g. a since-repaired object) should be
-        // retryable on the next call rather than sticky forever.
+        // retryable on the next call rather than sticky forever. Only erase
+        // it here if nothing is pinned it, though -- a waiter that arrived
+        // after the miss now pins before waiting (see the in-flight branch
+        // above), so erasing unconditionally would free the entry out from
+        // under it the moment it wakes and checks e->failed. If something
+        // is still pinned, leave it for release()'s own failed-cleanup
+        // (below) to erase once the last pin actually drops.
         {
             std::lock_guard<std::mutex> lk3(impl_->mu);
             auto it2 = impl_->map.find(key);
-            if (it2 != impl_->map.end() && it2->second.get() == e) {
+            if (it2 != impl_->map.end() && it2->second.get() == e &&
+                e->refcount.load(std::memory_order_relaxed) == 0) {
                 impl_->lru.erase(e->lru_it);
                 impl_->map.erase(it2);
             }
@@ -267,18 +325,33 @@ core::Result<FrameLease> FrameCache::get_or_fill(
         return std::unexpected(err);
     }
 
-    {
-        std::lock_guard<std::mutex> flk(e->fill_mutex);
-        e->ready.store(true, std::memory_order_release);
-    }
-    e->fill_cv.notify_all();
-
+    // Pin this thread's own lease and publish `ready` inside the SAME
+    // mu-locked section that runs evict_if_needed() -- and pin BEFORE
+    // publishing ready. evict_if_needed()'s eviction test is exactly
+    // `refcount == 0 && ready == true`; publishing ready first (as an
+    // earlier version of this function did, under fill_mutex, before ever
+    // touching impl_->mu) left a real window where a concurrent
+    // get_or_fill() for a DIFFERENT key could observe this entry as
+    // ready-and-unreferenced and evict + delete it out from under this very
+    // thread (or a thread already woken from fill_cv.wait() below) before
+    // either one ever got the chance to bump refcount -- a genuine
+    // use-after-free, reproducible on every run under real eviction pressure
+    // (see modules/mount/tests/test_blockcache_race.cpp's "racing fills on
+    // distinct keys" case, which forces exactly this). Locking mu first
+    // closes the window: evict_if_needed() cannot run concurrently with
+    // this block at all, so it can never see refcount == 0 for an entry
+    // this thread is about to hand out a lease to.
     {
         std::lock_guard<std::mutex> lk4(impl_->mu);
         impl_->bytes_resident += e->data.size();
         e->refcount.fetch_add(1, std::memory_order_relaxed);  // this thread's own lease
+        {
+            std::lock_guard<std::mutex> flk(e->fill_mutex);
+            e->ready.store(true, std::memory_order_release);
+        }
         impl_->evict_if_needed();
     }
+    e->fill_cv.notify_all();
 
     FrameLease lease;
     lease.entry_ = e;

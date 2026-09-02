@@ -240,7 +240,7 @@ core::Result<GroupMatch> match_group_sparse(core::ITensorSource& target, core::I
     // widen-retry below and by null_repair's exact dense solve on the
     // leftover) while large groups get meaningfully more candidates to work
     // with, capped at opts.max_K to keep memory bounded (SparseMatchOptions
-    // doc comment has the ADR 0011 numbers this trades against).
+    // doc comment has the ADR 0012 numbers this trades against).
     const auto K_scaled = static_cast<std::int64_t>(std::sqrt(static_cast<double>(n)) * 2.0);
     const std::int64_t K_ceiling = std::min(opts.max_K, static_cast<std::int64_t>(n));
     std::int64_t K = std::min(std::max(opts.K, K_scaled), K_ceiling);
@@ -321,7 +321,7 @@ core::Result<GroupMatch> match_group_sparse(core::ITensorSource& target, core::I
     // random_cost: Monte Carlo estimate of the "matched by chance" baseline
     // (CostMatrix::random_cost()'s dense-path exact mean is unavailable here
     // by design -- the whole point of this path is never materialising the
-    // full n x n matrix, ADR 0011). A handful of random permutations, scored
+    // full n x n matrix, ADR 0012). A handful of random permutations, scored
     // with the same sparse_true_cost used for identity_cost above, is cheap
     // relative to the fingerprint/auction work already done and averages out
     // most of the per-permutation noise.

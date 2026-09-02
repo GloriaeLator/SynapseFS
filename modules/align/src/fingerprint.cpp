@@ -88,7 +88,7 @@ core::Result<torch::Tensor> fingerprint_group(core::ITensorSource& src, const co
             const std::uint32_t hi = std::min(lo + row_tile, n);
             const std::uint32_t chunk_units = hi - lo;
             // Peak memory here is O(row_tile * D), independent of n or the
-            // tensor's total size -- the whole point of this path (docs/adr/0011).
+            // tensor's total size -- the whole point of this path (docs/adr/0012).
             // (On CUDA, "memory" here means host RAM for the read plus one
             // row_tile-sized chunk of VRAM for the compute below, not the
             // whole group's VRAM footprint.)

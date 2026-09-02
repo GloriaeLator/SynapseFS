@@ -41,8 +41,8 @@ possible at all.
 
 - The residual kernels. Dispatched once per frame through a function pointer
   chosen from CPUID (ADR 0011), then a tight loop with no indirection inside.
-- `expand(perm, block)`, varint encode/decode, endian conversion, chunk
-  hashing: free functions, header-inline, `constexpr` where possible.
+- `expand(perm, block)`, endian conversion, chunk hashing: free functions,
+  header-inline, `constexpr` where possible.
 - The interval table lookup in the mount: a concrete `std::vector` and
   `std::ranges::lower_bound`. It is on the fault path and it has exactly one
   implementation.

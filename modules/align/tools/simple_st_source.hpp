@@ -13,7 +13,7 @@
 /// of this file, which read the whole file into a std::vector<std::byte> up
 /// front (an instant multi-GB allocation on a large checkpoint, and the
 /// direct cause of an OOM kill on a ~2B-parameter model; see
-/// docs/adr/0011-libtorch-for-large-groups.md).
+/// docs/adr/0012-libtorch-for-large-groups.md).
 ///
 /// Linux-only (POSIX mmap), matching the rest of the project's stated scope.
 

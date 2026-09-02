@@ -72,6 +72,25 @@ def write_fixture(out_dir, in_dim, h1, h2, out_dim, seed_data, seed_perm):
     rng = np.random.default_rng(seed_data)
     base, target, perm0, perm2 = build_and_permute(rng, in_dim, h1, h2, out_dim, seed_perm)
 
+    # A column-axis fancy-index (target["2.weight"] = ...[:, perm0], and
+    # similarly for "4.weight") returns a real, freshly-allocated array --
+    # advanced indexing always copies -- but not necessarily a C-contiguous
+    # one; numpy is free to lay it out however, and here it comes back
+    # Fortran-ordered. safetensors' writer serializes an array's raw buffer
+    # as-is, with no contiguity check, so an F-ordered array gets its bytes
+    # written in column-major order while the header still declares a
+    # C-major shape -- silently transposing the tensor on disk. Confirmed by
+    # hand: target["2.weight"] matched the in-memory (pre-save) array
+    # exactly, but differed from the *loaded* file by up to 0.9 (nowhere
+    # near fp16 rounding) after a save/load round trip, while row-only
+    # fancy-indexed tensors (target["0.weight"] = ...[perm0, :], which numpy
+    # does keep C-contiguous) round-tripped bit-exact. This was the entire
+    # cause of the align dependent-group "bug" chased earlier: the group
+    # whose own weight tensor needed a column-axis permutation got corrupted
+    # test data, not a wrong answer from align::Matcher.
+    base = {k: np.ascontiguousarray(v) for k, v in base.items()}
+    target = {k: np.ascontiguousarray(v) for k, v in target.items()}
+
     save_file(base, os.path.join(out_dir, "base.safetensors"), {"format": "synapsefs-fixture"})
     save_file(target, os.path.join(out_dir, "target.safetensors"), {"format": "synapsefs-fixture"})
     with open(os.path.join(out_dir, "config.json"), "w") as f:

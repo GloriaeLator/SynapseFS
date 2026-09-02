@@ -1,7 +1,7 @@
 #pragma once
 /// \file auction.hpp
 /// Jacobi (parallel) sparse auction with private null objects, for the
-/// large-group sparse alignment path (docs/adr/0011).
+/// large-group sparse alignment path (docs/adr/0012).
 ///
 /// Ported near-verbatim from cpp/src/auction.cpp -- the algorithm (Bertsekas
 /// parallel auction, integer-quantised costs, private null objects at
