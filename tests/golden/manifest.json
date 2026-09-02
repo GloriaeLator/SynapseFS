@@ -1,5 +1,4 @@
 {
-  "type": "synapsefs.manifest",
   "format_version": 1,
   "hash_algo": "blake3",
   "file": {
