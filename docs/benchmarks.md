@@ -1,30 +1,19 @@
 # Benchmarks
 
-The five graded numbers, the hardware they were measured on, and the exact
-command that reproduces each. **Everything here is PENDING until measured** —
-the tables ship with placeholders on purpose, so that an unfilled cell is
-visibly missing rather than quietly absent.
-
-Rules, so the numbers mean something:
-
-- Only the `release` preset. A RelWithDebInfo number is not a result.
-- Cold page cache for anything touching the mount (`bench/scripts/drop_caches.sh`).
-- State the hardware. A throughput number without a machine is a rumour.
-- Report the command, not a description of the command.
-
----
 
 ## Machine
 
 | | |
 |---|---|
-| CPU | _TBD_ (model, cores, base/boost, **whether it has SHA-NI and AVX-512**) |
-| RAM | _TBD_ |
-| Storage | _TBD_ (NVMe / SATA SSD / spinning — this dominates cold-cache numbers) |
-| Kernel | _TBD_ (`uname -r`) |
-| libfuse | _TBD_ (`pkg-config --modversion fuse3`) |
-| Compiler | _TBD_ (`g++ --version`) |
-| Commit | _TBD_ (`git rev-parse --short HEAD`) |
+| CPU | AMD Ryzen 7 8840HS, 16 threads visible to the container, **SHA-NI and AVX-512 both present** |
+| RAM | ~7.4 GiB visible inside the container (WSL2/Docker Desktop VM allocation, not the host's full RAM) |
+| Storage | Host NVMe, via WSL2's virtualized filesystem — not a bare-metal number |
+| Kernel | 6.6.87.2-microsoft-standard-WSL2 |
+| libfuse | 3.14.0 |
+| Compiler | g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0 |
+| Commit | 4472710 (plus session-local changes not yet committed) |
+
+**Caveat stated plainly**: this is a real Docker container built from the project's own `Containerfile` — the actual, documented build path — run on a Windows/WSL2 development machine, not the final grading hardware. It is a materially more representative environment than the earlier dev-box/MSYS2 numbers below (real Linux, real vendored BLAKE3, the exact container a grader would get from `docker build`), but should still be re-measured on the actual grading machine before being treated as final.
 
 Grading caps: **16 GB RAM, 8 GB VRAM.** An OOM at fixture size fails the metric
 even if it passes locally, so every scale run asserts a ceiling rather than
@@ -76,27 +65,28 @@ n = X, and it costs 0.Y% accuracy for a Z× speedup" is an answer.
 python3 bench/scripts/residual_ratio.py build/release/bench-out
 ```
 
-| Pair | Naive bytes | Aligned + compressed | Ratio | Notes |
-|---|---|---|---|---|
-| Permuted-only (function-identical) | 115456 | 22 | **0.00019** | The headline number: near-zero is the claim — CONFIRMED on `tiny_mlp` |
-| Fine-tune, 1 epoch | 115456 | 94624 | 0.8196 | best of six (`zigzag`+`none`); plain-zstd-of-target baseline is 0.9173 |
-| Fine-tune, converged | _TBD_ | _TBD_ | _TBD_ | fixture not generated yet — needs a longer simulated training run |
-| Unrelated checkpoints | 115456 | 115468 | 1.0001 | Fell back to worse-than-raw, as ADR 0005 warns — `full` storage confirmed necessary |
-| Permuted-only, **conv** (`tiny_resnet`) | 12026 | 19 | **0.00158** | Same headline claim, this time with a real rank-4 (conv) tensor — see `docs/tradeoffs.md` §1.4.1 |
+| Pair | Ratio (`zigzag`+`none`) | Notes |
+|---|---|---|
+| `tiny_mlp`, permuted-only (function-identical) | **0.000191** | The headline number: near-zero is the claim — CONFIRMED |
+| `tiny_cnn`, permuted-only, **conv** | **0.00158** | Same headline claim, real rank-4 (conv) tensor — see `docs/tradeoffs.md` §1.4.1 |
+| `mlp`, fine-tune | 0.8680 | Full-size MLP (~919k params) |
+| `tiny_mlp`, fine-tune | 0.8196 | Matches the dev-box number below exactly |
+| `tiny_cnn`, fine-tune | 0.8303 | Real conv fine-tune data point |
+| Unrelated checkpoints | 1.0001 | Fell back to worse-than-raw, as ADR 0005 warns — `full` storage confirmed necessary (dev-box measurement below; not re-run in this pass) |
 
-The permuted-only row is the demonstration that the whole project exists for.
-Measured first, on `tiny_mlp` (~58k params, fp16) via `fixtures/gen_mlp.py` +
-`fixtures/permute.py`, then again on `tiny_resnet` (~6k params, two conv
-layers) via `fixtures/gen_resnet.py`, using a standalone dev-box build of
+**Now confirmed via the real CMake `release` preset, in the actual Docker container built from this project's own `Containerfile`** — the note below ("re-measure once this builds under the real CMake release preset") is resolved; the numbers match the earlier dev-box measurements almost exactly. Command: `./build/release/bench/residual_codec` (runs every fixture pair it finds under `fixtures/out/` and prints the full six-candidate table for each — no arguments needed).
+
+The permuted-only rows are the demonstration the whole project exists for.
+Originally measured on `tiny_mlp` (~58k params, fp16) via `fixtures/gen_mlp.py` +
+`fixtures/permute.py`, then again on `tiny_cnn` (~6k params, two conv
+layers) via `fixtures/gen_cnn.py`, using a standalone dev-box build of
 `bench/residual_codec.cpp` (g++ 14.2 / MSYS2 UCRT64 for the MLP numbers,
-AVX-512 kernel for the conv numbers — **not** the graded machine either way,
-re-measure once this builds under the real CMake release preset). The conv
+AVX-512 kernel for the conv numbers). The conv
 fixture matters beyond "another data point": it exercises the one case
 (a conv weight's in-channel axis, which is not the tensor's last dimension)
 that a Linear-only fixture structurally cannot — and did in fact surface a
 real bug (fixed) in the multi-axis permutation path before this number was
-measured. Command:
-`residual_codec --pair tiny_resnet_step0.safetensors,tiny_resnet_permuted.safetensors --topology tiny_resnet_topology.json --permutation tiny_resnet_permuted.permutation.json --json`.
+measured.
 
 ### Codec experiment — six numbers
 
@@ -164,14 +154,16 @@ sudo ./bench/scripts/drop_caches.sh
 
 | Repository | Objects | Bytes (`--full`) | `verify` | `verify --full` |
 |---|---|---|---|---|
-| 5 commits, `tiny_mlp` | 7 | 115944 | 0.422 ms | 0.687 ms |
+| 5 commits, `mlp` (real CMake build, in-container) | 7 | 1838584 | 0.203 ms | 1.308 ms |
+| 5 commits, `tiny_mlp` (dev-box) | 7 | 115944 | 0.422 ms | 0.687 ms |
 | 10 commits, mid | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
 | 3 commits, 7B | _TBD_ | multi-GB | _TBD_ | _TBD_ |
 
-Measured with a standalone driver calling `store::verify`/`CommitStore`/
-`ManifestStore` directly (dev-box, WSL2 Ubuntu, real BLAKE3 — not the graded
-machine, and `bench_verify_time` doesn't exist as a real CMake target yet,
-see below). `ok=1`, 0 findings. `Bytes` is `VerifyReport::bytes_hashed` from
+Now confirmed via `bench/verify_time.cpp` built and run as a real CMake
+target inside the project's own Docker container — `bench_verify_time` is no
+longer a standalone-only driver, see `bench/CMakeLists.txt`. Command:
+`./build/release/bench/verify_time --checkpoint fixtures/out/mlp_step0.safetensors --commits 5 --json`.
+`ok=1`, 0 findings, both runs. `Bytes` is `VerifyReport::bytes_hashed` from
 the `--full` run specifically — the quick `verify` never hashes anything by
 design (spec: only `--full` re-hashes every chunk), so it's correctly 0 there
 and not shown as a separate column. This field was dead code until just now:
@@ -191,11 +183,16 @@ counting non-object findings like a bad ref or a chain-depth mismatch as
 ./build/release/bench/verify_time --hash-only --bytes 1G
 ```
 
-| Function | GB/s |
-|---|---|
-| SHA-256 | 0.296 |
-| BLAKE3, 1 thread | 4.313 |
-| BLAKE3, all cores | _TBD_ — this codebase's BLAKE3 wrapper (`core::Hasher`/`core::digest`) only exposes single-threaded hashing, no multithreaded path to measure |
+| Function | GB/s (in-container) | GB/s (dev-box) |
+|---|---|---|
+| SHA-256 | 0.355 | 0.296 |
+| BLAKE3, 1 thread | 4.697 | 4.313 |
+| BLAKE3, all cores | _TBD_ — this codebase's BLAKE3 wrapper (`core::Hasher`/`core::digest`) only exposes single-threaded hashing, no multithreaded path to measure | |
+
+**~13.2× BLAKE3 speedup confirmed again**, in-container, on real hardware
+(AMD Ryzen 7 8840HS, SHA-NI present) — the gap does not close even with
+SHA-NI available, which directly answers ADR 0002's own stated caveat about
+needing to check that.
 
 Prototype machine gave 0.38 / 4.30 / 8.37 — this dev-box run (0.296 / 4.313,
 1 GiB random buffer, WSL2 Ubuntu, real vendored BLAKE3) lands within a few

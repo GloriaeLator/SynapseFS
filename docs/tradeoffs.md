@@ -109,11 +109,11 @@ ratio is at its floor regardless of choice. **Decision: `zigzag_after_permute`
 + `Transform::None` is the default in `EncodeOptions`** (see
 [ADR 0005](adr/0005-residual-encoding.md), now Accepted).
 
-### 1.4.1 The conv case — measured on `tiny_resnet` (~6k params, fp16, two conv layers)
+### 1.4.1 The conv case — measured on `tiny_cnn` (~6k params, fp16, two conv layers)
 
 `tiny_mlp` above only ever exercises rank-2 (Linear) tensors — every axis a
-permutation touches is the tensor's last dimension. `tiny_resnet`
-(`fixtures/gen_resnet.py`: conv2d → batchnorm2d → relu → conv2d →
+permutation touches is the tensor's last dimension. `tiny_cnn`
+(`fixtures/gen_cnn.py`: conv2d → batchnorm2d → relu → conv2d →
 batchnorm2d → relu → maxpool2d → flatten → linear) has a real rank-4 case:
 `3.weight`, shape `[24, 16, 3, 3]`, whose in-channel axis (dim 1) depends on
 the *first* conv's output group and is **not** the tensor's last dimension —
@@ -123,9 +123,16 @@ secondary-axis gather, and this very bench tool's own `gather_axis`) before
 each was fixed to account for the trailing `kh×kw` block that has to move
 with each in-channel index rather than being treated as a bare scalar.
 
-Command: `bench_residual_codec --pair tiny_resnet_step0.safetensors,tiny_resnet_permuted.safetensors --topology tiny_resnet_topology.json --permutation tiny_resnet_permuted.permutation.json --json`
+Command: `bench_residual_codec --pair tiny_cnn_step0.safetensors,tiny_cnn_permuted.safetensors --config tiny_cnn_config.json --topology tiny_cnn_topology.json --permutation tiny_cnn_permuted.permutation.json --json`
 
-**Permuted-only pair** (`tiny_resnet_step0` → `tiny_resnet_permuted`, pure
+Topology structure now comes from the REAL `align::parse_topology_file()`
+against `tiny_cnn_config.json` (the actual `"layers"` schema), not a
+hand-parsed sidecar — confirmed to produce the byte-identical ratio
+(0.00158) as before the switch, including through the rank-4/multi-axis
+case, which is the strongest evidence this integration is correct rather
+than coincidentally consistent.
+
+**Permuted-only pair** (`tiny_cnn_step0` → `tiny_cnn_permuted`, pure
 permutation, `3.weight` included): ratio **0.00158** across all six
 candidates — the same near-zero floor as `tiny_mlp`'s headline case, this
 time with a real rank-4 tensor in the mix. Baseline plain-zstd-of-target:
@@ -135,7 +142,7 @@ wrong rather than absent, `3.weight`'s residual would be high-entropy noise
 from comparing misaligned bytes, and would have dominated the ratio back
 toward ~1.0 instead of the ~0.0016 measured.
 
-**Fine-tune pair** (`tiny_resnet_step0` → `tiny_resnet_step1`, identity
+**Fine-tune pair** (`tiny_cnn_step0` → `tiny_cnn_step1`, identity
 permutation, no alignment needed): best is again `zigzag(b-a)` + bitshuffle
 at ratio 0.8276, decompress 444 MB/s — consistent with `tiny_mlp`'s finding
 that `zigzag` beats `a^b` on real (not purely-permuted) deltas, though the
