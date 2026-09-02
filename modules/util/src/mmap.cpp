@@ -104,7 +104,9 @@ std::expected<void, std::error_code> Mmap::advise_range(std::uint64_t offset, st
     std::uint64_t misalign = static_cast<std::uint64_t>(data_ - map_base_);
     std::uint64_t abs_off = misalign + offset;
     std::uint64_t aligned = align_down<std::uint64_t>(abs_off, kPageSize);
-    std::size_t adjusted_len = len + static_cast<std::size_t>(abs_off - aligned);
+    // abs_off - aligned is already uint64_t, which is size_t on this
+    // (Linux/LP64-only, per docs/adr/0001) target: no cast needed.
+    std::size_t adjusted_len = len + (abs_off - aligned);
     if (aligned + adjusted_len > map_size_) adjusted_len = map_size_ - aligned;
 
     if (::madvise(const_cast<std::byte*>(map_base_) + aligned, adjusted_len, flag) != 0)

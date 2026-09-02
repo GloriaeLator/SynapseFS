@@ -124,8 +124,7 @@ Result<std::size_t> LooseStore::read_range(const Oid& oid, ObjectKind expected_k
             return std::unexpected(vr.error());
 
         std::uint64_t within = abs_off - chunk_start;
-        std::size_t take =
-            std::min<std::size_t>(want - done, static_cast<std::size_t>(chunk_len - within));
+        std::size_t take = std::min<std::size_t>(want - done, chunk_len - within);
         ::memcpy(out.data() + done, chunk_buf.data() + within, take);
         done += take;
     }

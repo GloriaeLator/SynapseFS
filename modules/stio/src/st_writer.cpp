@@ -59,7 +59,10 @@ public:
         update(reinterpret_cast<const std::byte*>(len_be), 8);
 
         std::array<std::uint8_t, 32> out{};
-        for (int i = 0; i < 8; ++i) {
+        // size_t, not int: out[] is std::array::operator[](size_type), so an
+        // int index is an implicit signed->unsigned conversion. (len_be above
+        // is a C array, whose subscript is ptrdiff_t arithmetic — no warning.)
+        for (std::size_t i = 0; i < 8; ++i) {
             out[i * 4 + 0] = static_cast<std::uint8_t>(h_[i] >> 24);
             out[i * 4 + 1] = static_cast<std::uint8_t>(h_[i] >> 16);
             out[i * 4 + 2] = static_cast<std::uint8_t>(h_[i] >> 8);

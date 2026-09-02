@@ -29,6 +29,7 @@ enum class ObjectKind : std::uint8_t {
     Manifest = 3,
     Commit   = 4,
     Topology = 5,
+    Tree     = 6,  ///< sharded checkpoint: name -> manifest (format version 2)
 };
 
 [[nodiscard]] std::string_view to_string(ObjectKind) noexcept;

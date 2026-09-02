@@ -43,12 +43,21 @@ def check_canonical_stable(name: str, obj) -> None:
 
 
 def check_commit(name: str, o: dict) -> None:
-    for k in ("type", "format_version", "parents", "manifest", "topology",
+    # No "type" field: format::Commit (modules/format/include/synapsefs/
+    # format/commit.hpp) has no such member, so to_canonical_json() never
+    # emits one, and Commit::parse()'s mandatory canonicalisation round-trip
+    # (re-serialise, compare byte-for-byte against the input) would reject
+    # any object that carried one. This fixture used to carry one anyway --
+    # a real drift between this file and the actual C++ parser, not a
+    # stylistic choice (docs/known-gaps.md's "golden fixtures vs. real
+    # parser" row) -- so this check no longer requires or allows it.
+    if "type" in o:
+        fail(name, "carries a 'type' field the real format::Commit parser has no field for "
+                   "and would reject on its canonicalisation round-trip check")
+    for k in ("format_version", "parents", "manifest", "topology",
               "timestamp", "author", "message"):
         if k not in o:
             fail(name, f"missing required field {k!r}")
-    if o.get("type") != "synapsefs.commit":
-        fail(name, f"wrong type {o.get('type')!r}")
     if "parent" in o or "branch" in o or "commit_hash" in o:
         fail(name, "carries a field removed in format version 1 "
                    "(parent / branch / commit_hash)")
@@ -62,8 +71,12 @@ def check_commit(name: str, o: dict) -> None:
 
 def check_manifest(name: str, o: dict) -> dict[str, int]:
     """Returns tensor -> nbytes, for cross-checking the topology."""
-    if o.get("type") != "synapsefs.manifest":
-        fail(name, f"wrong type {o.get('type')!r}")
+    # Same reasoning as check_commit: format::Manifest has no "type" field,
+    # to_canonical_json() never emits one, and parse()'s round-trip check
+    # would reject a real object that carried one.
+    if "type" in o:
+        fail(name, "carries a 'type' field the real format::Manifest parser has no field for "
+                   "and would reject on its canonicalisation round-trip check")
     f = o.get("file", {})
     for k in ("name", "header_block", "total_bytes", "sha256"):
         if k not in f:
@@ -102,8 +115,13 @@ def check_manifest(name: str, o: dict) -> dict[str, int]:
         elif mode == "delta":
             if "base" not in g or "diff_block" not in g:
                 fail(name, f"group {gid}: mode=delta needs `base` and `diff_block`")
-            if g.get("chain_depth", 0) < 1:
-                fail(name, f"group {gid}: mode=delta must have chain_depth >= 1")
+            # NOT "chain_depth >= 1": the real Manifest::validate()
+            # (modules/format/src/manifest.cpp) only requires a Full group's
+            # chain_depth to be exactly 0 -- it places no lower bound on a
+            # Delta group's. This file used to assert one anyway, which is
+            # stricter than the actual parser and would have flagged a
+            # manifest the real code accepts (docs/known-gaps.md's "golden
+            # fixtures vs. real parser" row).
         else:
             fail(name, f"group {gid}: unknown mode {mode!r}")
         if "block_hash" in g or mode == "unchanged_reuse":

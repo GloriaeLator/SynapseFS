@@ -92,8 +92,22 @@ using Status = Result<void>;
 
 /// Propagate on failure, unwrap on success.
 ///   auto bytes = SFS_TRY(store.get(oid, ObjectKind::Manifest));
+///
+/// Built on a GNU statement-expression: a GCC/Clang extension, not ISO C++.
+/// That is deliberate — it is the only way to get "unwrap or propagate"
+/// ergonomics as an *expression* without a language-level operator (C++23
+/// has none) or forcing every call site to name its enclosing function's
+/// return type. This project targets Linux with GCC and Clang only, both of
+/// which implement statement expressions identically.
+///
+/// `__extension__` suppresses -Wpedantic's "ISO C++ forbids braced-groups
+/// within expressions" for this one construct, at the definition, without
+/// weakening -Wpedantic anywhere else in the project. Do not replace this
+/// with -Wno-pedantic in cmake/CompilerWarnings.cmake: -Wall and -Wextra do
+/// NOT subsume -Wpedantic, so that would silently drop every other non-ISO
+/// construct the build currently catches.
 #define SFS_TRY(expr)                                     \
-    ({                                                    \
+    __extension__ ({                                      \
         auto sfs_try_result_ = (expr);                    \
         if (!sfs_try_result_) [[unlikely]]                \
             return ::std::unexpected(sfs_try_result_.error()); \

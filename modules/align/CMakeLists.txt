@@ -27,6 +27,18 @@ target_compile_options(sfs_align PRIVATE ${TORCH_CXX_FLAGS})
 # with find_package(Torch REQUIRED) succeeding.
 target_include_directories(sfs_align PRIVATE ${TORCH_INCLUDE_DIRS})
 
+# rectangular_lsap.cpp/.h is vendored verbatim from scipy (BSD-3-Clause; see
+# the file's own header) -- the shortest-augmenting-path LAP solver this module
+# is built on. It sits under src/ rather than third_party/ because the module
+# target globs src/*.cpp as one unit, so the project-wide "not applied to
+# third_party/" exemption in cmake/CompilerWarnings.cmake has no directory
+# boundary to hook onto here. It produces ~49 warnings under our set (signed/
+# unsigned index arithmetic, implicit float widening); retrofitting our style
+# onto someone else's reviewed numerical code is not worth the diff, and under
+# the dev preset (-Werror) those warnings are hard build failures. Applied
+# per-source so every other file in this module keeps the full warning set.
+set_source_files_properties(src/rectangular_lsap.cpp PROPERTIES COMPILE_OPTIONS "-w")
+
 # tools/ is align's own test-support code, not the module's public library:
 # a whole-file-resident ITensorSource over a real .safetensors file, used to
 # exercise align end-to-end before stio's real (streaming) reader exists.

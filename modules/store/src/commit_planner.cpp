@@ -54,7 +54,11 @@ public:
         auto n = inner_.read_units(name, first, count, out);
         if (!n) return n;
 
-        const auto row_bytes = static_cast<std::uint64_t>(col_perm_.size()) * unit_bytes_;
+        // The 64-bit multiply is deliberate (a wide permutation times a wide
+        // row can exceed 32 bits). Widen unit_bytes_, which is the actually
+        // narrow uint32_t operand; col_perm_.size() is already size_t, so
+        // casting *it* was the no-op -Wuseless-cast objected to.
+        const auto row_bytes = col_perm_.size() * static_cast<std::uint64_t>(unit_bytes_);
         if (*n != count * row_bytes) {
             return SFS_ERR(Internal, "ColumnPermutingSource: short read from inner source",
                           tensor_);

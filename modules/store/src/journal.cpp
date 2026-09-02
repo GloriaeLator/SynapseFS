@@ -8,6 +8,7 @@
 #include <synapsefs/store/refs.hpp>
 #include <synapsefs/util/atomic_io.hpp>
 #include <synapsefs/util/file.hpp>
+#include <synapsefs/util/log.hpp>
 
 namespace fs = std::filesystem;
 
@@ -139,7 +140,14 @@ Status Journal::commit(std::uint64_t seq) {
     std::error_code ec;
     fs::remove(p, ec);
     if (ec) return SFS_ERR(Io, "cannot remove journal record", p.string());
-    util::fsync_dir(dir_);
+    if (auto r = util::fsync_dir(dir_); !r) {
+        // The record is already unlinked; only the directory entry's
+        // durability is unconfirmed. Journal::recover() re-runs the same CAS
+        // idempotently, so a torn fsync here means at worst one redundant
+        // (harmless) recovery pass after a crash — not data loss.
+        SFS_LOG_W("journal", "fsync of journal directory failed after commit: {}",
+                  r.error().message());
+    }
     return {};
 }
 

@@ -19,6 +19,7 @@ std::string_view kind_tag(ObjectKind k) noexcept {
         case ObjectKind::Manifest: return "manifest";
         case ObjectKind::Commit:   return "commit";
         case ObjectKind::Topology: return "topology";
+        case ObjectKind::Tree:     return "tree";
     }
     return "?";
 }
@@ -41,6 +42,7 @@ Result<ObjectKind> object_kind_from_string(std::string_view s) noexcept {
     if (s == "manifest") return ObjectKind::Manifest;
     if (s == "commit") return ObjectKind::Commit;
     if (s == "topology") return ObjectKind::Topology;
+    if (s == "tree") return ObjectKind::Tree;
     return SFS_ERR(MalformedObject, "unknown object kind", std::string(s));
 }
 
