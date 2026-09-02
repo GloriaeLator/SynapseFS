@@ -1,4 +1,4 @@
-#   docker build -f Dockerfile.pytorch -t synapsefs .
+#   docker build -f Containerfile -t synapsefs .
 #   docker run --rm -it --gpus all --cap-add SYS_ADMIN --device /dev/fuse synapsefs
 
 ARG TORCH_IMAGE=docker.io/pytorch/pytorch:2.13.0-cuda13.2-cudnn9-devel
