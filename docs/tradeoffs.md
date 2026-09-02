@@ -282,7 +282,7 @@ in [ADR 0001](adr/0001-cpp23-and-toolchain.md).
 | Averaging weights on merge | See 2.2. |
 | GPG signing / authenticated refs | Out of scope per the PS; see [threat_model.md](threat_model.md). |
 | Supporting `.pt` / `.bin` input | Explicit bonus in the PS. First thing cut if it ever starts. |
-| Multi-file checkpoints (sharded safetensors) | Not in the graded fixtures. The manifest's `file` object would become an array; the design admits it and we have not built it. |
+| Multi-file checkpoints (sharded safetensors) | Not in the graded fixtures. The `tree` object that carries them is specified (SPEC 10 §6a) and implemented (`format::Tree`), but no commit points at one; see §4. |
 
 ---
 
@@ -291,7 +291,10 @@ in [ADR 0001](adr/0001-cpp23-and-toolchain.md).
 Stated here rather than discovered in the Q&A.
 
 - Transformers are not supported and are out of scope in the PS.
-- A single `.safetensors` file per commit; sharded checkpoints are not handled.
+- A single `.safetensors` file per commit. The `tree` object for sharded
+  checkpoints is implemented and tested (`format::Tree`, SPEC 10 §6a), but
+  `Commit.manifest` still always addresses a `manifest`, so nothing in this
+  build writes or reads a tree end to end. Sharded input is still rejected.
 - No authentication or transport encryption.
 - `gc` refuses while a mount is attached rather than coordinating with it.
 - Alignment is a local optimum; there is no guarantee of the globally best

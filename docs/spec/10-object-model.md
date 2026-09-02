@@ -58,6 +58,7 @@ oid(kind, payload)   = "b3:" || hex(BLAKE3_256(frame(kind, payload)))
 | `manifest` | UTF-8 canonical JSON (§4)                                    |
 | `commit`   | UTF-8 canonical JSON (§3)                                    |
 | `topology` | UTF-8 canonical JSON (SPEC 13)                               |
+| `tree`     | UTF-8 canonical JSON (§6a) — format version 2 only           |
 
 The kind is inside the hashed bytes. This is not decoration: without it, the
 same byte string read as a tensor group and as a diff artifact would have the
@@ -70,7 +71,7 @@ silent cast.
 
 ### 1.4 Canonical JSON
 
-JSON-valued objects (`commit`, `manifest`, `topology`) MUST be serialised
+JSON-valued objects (`commit`, `manifest`, `topology`, `tree`) MUST be serialised
 canonically, because the serialisation *is* the address:
 
 1. UTF-8, no BOM.
@@ -329,6 +330,41 @@ self-describing.
 
 ---
 
+## 6a. Tree — sharded checkpoints (format version 2)
+
+A format-version-1 commit names exactly one file, so `commit.manifest`
+addresses a `manifest` directly and there is no tree object. A sharded
+checkpoint (`model-00001-of-00003.safetensors` alongside an `index.json`) is a
+*set* of files and needs one more level of indirection.
+
+A `tree` is UTF-8 canonical JSON:
+
+```json
+{"entries":[{"manifest":"b3:a1…","name":"model-00001-of-00003.safetensors"}],"format_version":2}
+```
+
+- `format_version` MUST be `2`. A version-1 reader that resolves
+  `commit.manifest` and finds a `tree` MUST fail with
+  `ErrKind::UnsupportedFormatVersion`, not attempt to interpret it.
+- `entries` MUST be non-empty and sorted by `name`, strictly ascending. The
+  serialisation is the address, so an unsorted tree is a second address for the
+  same content and MUST be rejected rather than silently reordered.
+- `name` is a plain file name as it appears at checkout and in the mount: no
+  `/` or `\`, no NUL or other control bytes, not `.` and not `..`. A tree that
+  could name a path outside the checkout directory is a malformed object.
+- `manifest` addresses an object of kind `manifest`. Kind is verified at read
+  time (§1.3); a tree entry pointing at a non-manifest is
+  `ErrKind::ObjectKindMismatch`.
+
+Everything below a manifest — header, buffer layout, groups, diffs, raw blocks
+— is unchanged by sharding. A tree adds a level to the graph and changes
+nothing else about it.
+
+Implemented in `modules/format/{include/synapsefs/format/tree.hpp,src/tree.cpp}`.
+**Not yet wired to `Commit`**: see §7.
+
+---
+
 ## 7. Versioning and compatibility
 
 - Every JSON object carries `format_version`. A reader MUST refuse an unknown
@@ -337,6 +373,11 @@ self-describing.
 - Unknown *fields* MUST be rejected, not ignored. Canonical JSON means an
   ignored field still changes the address, so silently tolerating one produces
   two objects that disagree about their own identity.
+- Format version 2 (`tree`) is **specified and implemented as an object, but no
+  commit in this build points at one**. `Commit.manifest` always addresses a
+  `manifest`. Writing trees requires a `Commit` that can address either, plus
+  the checkout, mount and verify paths to walk the extra level; until that
+  lands, a repository written by this build is version 1 throughout.
 - Until 1 October 2026 the format version is not stable and no backward
   compatibility is offered. This is a course project; say so rather than
   implying a compatibility promise we will not keep.
@@ -355,4 +396,5 @@ form of everything above:
 | Buffer layout covers the file with no gaps | `modules/format/tests/test_st_roundtrip.cpp` |
 | `sha256(reconstruct(A, diff(A,B))) == sha256(B)` | `tests/byte_identity.cpp` |
 | Ancestor invariant | `modules/store/tests/test_dag_walk.cpp` |
+| Tree sorting, name rules and round-trip | `modules/format/tests/test_tree.cpp` |
 | Golden objects still parse | `tests/golden/*.json` + `validate.py` in CI |
