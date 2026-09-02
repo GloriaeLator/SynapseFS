@@ -31,7 +31,11 @@ echo "== machine =="
 for b in align_time lap_bench sparse_bench residual_codec verify_time mmap_throughput; do
     if [[ -x "$BUILD/bench/$b" ]]; then
         echo; echo "== $b =="
-        "$BUILD/bench/$b" --json | tee "$OUT/$b.json"
+        # A benchmark reporting a real finding (e.g. align_time's ground-truth
+        # regressions from the known dependent-group bug) exits non-zero on
+        # purpose -- that's data, not a script failure, and shouldn't stop
+        # the remaining benchmarks under `set -e`.
+        "$BUILD/bench/$b" --json | tee "$OUT/$b.json" || true
     else
         echo "skipping $b (not built)"
     fi

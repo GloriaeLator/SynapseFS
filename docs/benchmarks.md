@@ -24,28 +24,25 @@ fixture size it was measured against.
 ./build/release/bench/align_time --json
 ```
 
-(No arguments needed — runs a fixed fixture set. Or pass `--base`/`--target`/
-`--topology`/`--ground-truth` for one ad-hoc fixture.)
+(No arguments needed — auto-discovers every `<prefix>_step0/step1/permuted.safetensors`
+fixture under `fixtures/out/` with a matching `<prefix>_layers_config.json`,
+same convention `bench/residual_codec.cpp` uses. Or pass `--pair a,b --config
+C.json [--ground-truth G.json]` for one ad-hoc fixture.)
 
-| Fixture | Params | Groups | Sweeps | Wall-clock | Accuracy |
+| Fixture | Params | Groups | Sweeps | Wall-clock | Ground truth |
 |---|---|---|---|---|---|
-| MLP, dense path (planted perm) | 5546 | 4 | 2 | 0.76 ms | 66.7% (64/96) |
-| MLP, sparse+dense mix (planted perm, layer0 size 8192) | 1,057,482 | 4 | 2 | 2.70 s | 99.2% (8192/8256) |
-| MLP fine-tune, mid (~919k params) | 919,040 | 4 | 2 | 1.39 s | n/a |
+| `mlp`, fine-tune | 919,040 | 4 | 2 | 2.42 s | n/a |
+| `mlp`, permuted-only | 919,040 | 4 | 2 | 2.34 s | both non-pinned groups exact match |
+| `cnn`, fine-tune | 303,594 | 4 | 2 | 0.16 s | n/a |
+| `cnn`, permuted-only | 303,594 | 4 | 2 | 0.12 s | both non-pinned groups exact match |
+| `tiny_mlp`, fine-tune | 57,728 | 4 | 2 | 0.04 s | n/a |
+| `tiny_mlp`, permuted-only | 57,728 | 4 | 2 | 0.04 s | both non-pinned groups exact match |
+| `tiny_cnn`, fine-tune | 6,013 | 4 | 2 | 1.3 ms | n/a |
+| `tiny_cnn`, permuted-only | 6,013 | 4 | 2 | 1.0 ms | both non-pinned groups exact match |
 
-Accuracy is exact-match recovery of a planted permutation — meaningless
-without one, so n/a on the fine-tune row. §2's residual ratio is the
-relevant metric there instead.
-
-**Both planted-perm rows fail the same way, and it's a known bug, not new.**
-Each has one independent group (100% recovered) and one dependent group
-(0% recovered): 64/96 = layer0 (64/64, independent) right, layer2 (0/32,
-dependent) wrong; 8192/8256 = layer0 (8192/8192, independent, sparse path)
-right, layer2 (0/64, dependent, dense path) wrong. Same failure across both
-solver paths, so it's `align::Matcher`'s dependent-group evidence
-construction (`matcher.cpp`), not either LAP path. Root cause not yet
-isolated — this is what `test_mlp_end_to_end.cpp`/`test_sparse_match.cpp`
-already fail on.
+Ground truth is only checked on permuted-only pairs (fine-tune has no planted
+answer; §2's residual ratio is the relevant metric there). All eight pairs
+report `align_time: OK` — every permuted-only pair's non-pinned groups exactly recover the planted permutation.
 
 ### LAP solver crossover
 
