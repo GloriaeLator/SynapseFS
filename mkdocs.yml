@@ -1,0 +1,46 @@
+site_name: SynapseFS
+site_description: Permutation-aware, cryptographically verifiable version control for neural network checkpoints
+docs_dir: docs
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Build: build.md
+  - Benchmarks: benchmarks.md
+  - Trade-offs: tradeoffs.md
+  - Testing: testing.md
+  - Threat model: threat_model.md
+  - Storage format: storage_format.md
+  - Alignment algorithm: alignment_algorithm.md
+  - Spec:
+      - Object model: spec/10-object-model.md
+      - Repo layout: spec/11-repo-layout.md
+      - Residual format: spec/12-residual-format.md
+      - Topology config: spec/13-topology-config.md
+      - Wire protocol: spec/14-wire-protocol.md
+      - CLI contract: spec/15-cli-contract.md
+      - Consistency: spec/16-consistency.md
+  - Interfaces:
+      - Interfaces: interfaces/interfaces.md
+      - Errors: interfaces/errors.md
+  - ADRs:
+      - Index: adr/README.md
+      - "0001 - C++23 and toolchain": adr/0001-cpp23-and-toolchain.md
+      - "0002 - BLAKE3 over SHA-256": adr/0002-blake3-over-sha256.md
+      - "0003 - FUSE low-level vs high-level": adr/0003-fuse-lowlevel-vs-highlevel.md
+      - "0004 - Weight matching vs activation vs OT": adr/0004-weight-matching-vs-activation-vs-ot.md
+      - "0005 - Residual encoding": adr/0005-residual-encoding.md
+      - "0006 - Packfiles vs loose objects": adr/0006-packfiles-vs-loose-objects.md
+      - "0007 - Crash safety, journal vs rename": adr/0007-crash-safety-journal-vs-rename.md
+      - "0008 - Out-of-core streaming": adr/0008-out-of-core-streaming.md
+      - "0009 - libtorch for large groups": adr/0009-libtorch-for-large-groups.md
+      - "0010 - Virtual dispatch vs templates": adr/0010-virtual-dispatch-vs-templates.md
+      - "0011 - SIMD dispatch strategy": adr/0011-simd-dispatch-strategy.md
+
+markdown_extensions:
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true

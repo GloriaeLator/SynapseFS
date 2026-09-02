@@ -24,3 +24,4 @@ compile_commands.json
 .vs/
 *.swp
 .DS_Store
+site/
