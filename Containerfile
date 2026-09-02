@@ -25,7 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake ninja-build pkg-config \
       git ca-certificates \
-      libzstd-dev libssl-dev libjson-c-dev libfuse3-dev \
+      libzstd-dev libssl-dev libjson-c-dev libfuse3-dev fuse3 \
       nlohmann-json3-dev libcli11-dev catch2 \
     && rm -rf /var/lib/apt/lists/*
 

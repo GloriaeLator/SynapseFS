@@ -21,5 +21,6 @@ done
 wait "$PID" || RC=$?
 
 printf '\npeak RSS (VmHWM): %d KiB = %.2f MiB = %.3f GiB\n' \
-       "$PEAK" "$(echo "$PEAK/1024" | bc -l)" "$(echo "$PEAK/1048576" | bc -l)"
+       "$PEAK" "$(awk -v k="$PEAK" 'BEGIN { printf "%f", k/1024 }')" \
+       "$(awk -v k="$PEAK" 'BEGIN { printf "%f", k/1048576 }')"
 exit "${RC:-0}"

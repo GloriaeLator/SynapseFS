@@ -4,6 +4,8 @@ vcpkg_installed/
 fixtures/out/
 modules/align/tests/fixtures/mlp_end_to_end/
 modules/align/tests/fixtures/mlp_large_sparse/
+__pycache__/
+*.pyc
 *.o
 *.obj
 *.a

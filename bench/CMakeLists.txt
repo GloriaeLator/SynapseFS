@@ -27,6 +27,27 @@ foreach(src IN LISTS SFS_BENCHES)
     if(name STREQUAL "residual_codec")
         target_link_libraries(bench_${name} PRIVATE synapsefs::align)
     endif()
+    # align_time.cpp runs the real align::Matcher/parse_topology_file end to
+    # end (it IS the alignment wall-clock/accuracy benchmark), and reads real
+    # .safetensors fixtures via align's own SimpleStSource tool
+    # (modules/align/tools/simple_st_source.hpp) rather than duplicating a
+    # tensor-source adapter here.
+    if(name STREQUAL "align_time")
+        target_link_libraries(bench_${name} PRIVATE synapsefs::align sfs_align_tools)
+    endif()
+    # sparse_bench.cpp calls Matcher::match_group() directly (routes to the
+    # real sparse fingerprint+auction path above sparse_crossover) and reads
+    # fixtures via SimpleStSource, same reasoning as align_time above.
+    if(name STREQUAL "sparse_bench")
+        target_link_libraries(bench_${name} PRIVATE synapsefs::align sfs_align_tools)
+    endif()
+    # lap_bench.cpp benchmarks align::make_jv_solver()/make_greedy_solver()
+    # directly against synthetic cost matrices -- no checkpoint involved, but
+    # still the real, compiled align:: solver code, so it needs the real
+    # link (and therefore Torch) same as the two exceptions above.
+    if(name STREQUAL "lap_bench")
+        target_link_libraries(bench_${name} PRIVATE synapsefs::align)
+    endif()
     if(SFS_BUILD_MOUNT)
         target_link_libraries(bench_${name} PRIVATE synapsefs::mount)
     endif()

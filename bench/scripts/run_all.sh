@@ -28,7 +28,7 @@ echo "== machine =="
     echo "compiler: $($CXX --version 2>/dev/null | head -1 || g++ --version | head -1)"
 } | tee "$OUT/machine.txt"
 
-for b in align_time residual_codec verify_time mmap_throughput; do
+for b in align_time lap_bench sparse_bench residual_codec verify_time mmap_throughput; do
     if [[ -x "$BUILD/bench/$b" ]]; then
         echo; echo "== $b =="
         "$BUILD/bench/$b" --json | tee "$OUT/$b.json"
