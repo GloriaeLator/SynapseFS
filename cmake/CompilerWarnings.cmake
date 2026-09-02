@@ -19,7 +19,7 @@ function(sfs_set_warnings target)
         -Wformat=2
         -Wimplicit-fallthrough
         # We serialize structs to disk by hand; padding bugs are format bugs.
-        -Wpadded
+        -Wno-padded
     )
 
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
