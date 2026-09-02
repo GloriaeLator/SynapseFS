@@ -7,7 +7,7 @@
 /// out to Python: the whole point (see harness.hpp's own file comment) is
 /// that `ctest --preset unit` runs with no Python and no downloads. The
 /// architecture it generates mirrors fixtures/gen_mlp.py and
-/// fixtures/gen_resnet.py exactly — same nn.Sequential-index tensor naming,
+/// fixtures/gen_cnn.py exactly — same nn.Sequential-index tensor naming,
 /// same "biases/running-stats before weights" awkward insertion order — so a
 /// test using this harness is exercising the identical shape those Python
 /// fixtures exercise, just without needing them on disk.
@@ -20,12 +20,12 @@
 ///     [in_channels, conv0_out, conv1_out, linear_out]; extra entries are
 ///     ignored. Fixed spatial=8, kernel=3, maxpool(2) — the same
 ///     conv/bn/relu/conv/bn/relu/maxpool/flatten/linear shape as
-///     gen_resnet.py, indices 0/1/3/4/8 (2/5/6/7 are ReLU/pool/flatten and
+///     gen_cnn.py, indices 0/1/3/4/8 (2/5/6/7 are ReLU/pool/flatten and
 ///     own no tensors). with_batchnorm toggles whether "1.*"/"4.*" exist.
 ///
 /// A caller that needs a core::Topology matching a given SyntheticSpec builds
 /// one directly from these same names/shapes (see
-/// fixtures/gen_mlp.py::topology_sidecar / gen_resnet.py::topology_sidecar
+/// fixtures/gen_mlp.py::topology_sidecar / gen_cnn.py::topology_sidecar
 /// for the reference shape) — write_synthetic_checkpoint does not return one
 /// itself, since SyntheticSpec's naming is deterministic and the header
 /// above documents it exactly.
@@ -172,7 +172,7 @@ GenTensor make_conv_weight(std::string name, std::uint64_t out_c, std::uint64_t 
 /// BatchNorm's four buffers: weight starts near 1 (not 0 — an all-ones
 /// vector under permutation is still trivially "correct" either way, but
 /// starting near the real BN init keeps this fixture representative), the
-/// rest as gen_resnet.py's batchnorm2d().
+/// rest as gen_cnn.py's batchnorm2d().
 void make_batchnorm(std::uint32_t idx, std::uint64_t c, std::mt19937_64& rng,
                     std::vector<GenTensor>& weights, std::vector<GenTensor>& others) {
     GenTensor w;
@@ -290,7 +290,7 @@ std::string write_synthetic_checkpoint(const std::filesystem::path& dest,
     // `weights` and `others` (bias / running-stat tensors) are kept as
     // separate lists specifically so the awkward-order path below can
     // interleave them the way a real writer's dict insertion order would
-    // (see fixtures/gen_mlp.py / gen_resnet.py's own tensors={} literals).
+    // (see fixtures/gen_mlp.py / gen_cnn.py's own tensors={} literals).
     std::vector<GenTensor> weights, others;
     if (spec.with_conv) {
         build_conv(spec, rng, weights, others);

@@ -11,9 +11,12 @@ pair.
 
 Tensor names follow the same numeric nn.Sequential-style convention used by
 docs/spec/13-topology-config.md's own worked example ("0.weight", "0.bias",
-...) so the topology sidecar below reads exactly like a real topology object,
-even though it is emitted here as a plain JSON file rather than through the
-(unimplemented) align/topology_parser.
+...). Writes TWO different topology files, for two different consumers:
+`{prefix}_config.json` is the real `align::topology_parser` "layers" schema
+(see real_config()); `{prefix}_topology.json` is an older, pre-resolved
+perm_groups/tensors shape that predates topology_parser.cpp and is kept only
+because permute.py and bench/residual_codec.cpp still hand-parse it directly
+rather than through the real parser (see topology_sidecar()'s own comment).
 
 Deliberately minimal: this covers only the `mlp`/`tiny_mlp` rows of
 manifest.toml, needed to unblock the codec benchmark. resnet/llm_7b are out
@@ -60,6 +63,25 @@ def build_mlp(rng: np.random.Generator, in_dim: int, h1: int, h2: int, out_dim: 
     }
     dims = {"in": in_dim, "g0": h1, "g2": h2, "out": out_dim}
     return tensors, dims
+
+
+def real_config() -> dict:
+    """The actual `align::topology_parser` schema (a flat "layers" list,
+    modules/align/src/topology_parser.cpp's walk_layers) -- NOT the same
+    shape as topology_sidecar() below. That function's own comment explains
+    why the two differ: it predates topology_parser.cpp existing at all, and
+    permute.py / bench/residual_codec.cpp still consume its pre-resolved
+    perm_groups/tensors shape directly rather than through the real parser
+    (see modules/align/tests/fixtures/generate.py for the fixture set that
+    already exercises this exact real schema). Shapes aren't named here on
+    purpose -- the parser derives them from the checkpoint's own tensors,
+    not from this file.
+    """
+    return {"layers": [
+        {"type": "linear"}, {"type": "relu"},
+        {"type": "linear"}, {"type": "relu"},
+        {"type": "linear"},
+    ]}
 
 
 def topology_sidecar(dims: dict) -> dict:
@@ -130,9 +152,13 @@ def main() -> None:
     with open(topo_path, "w") as f:
         json.dump(topology_sidecar(dims), f, indent=2)
 
+    config_path = os.path.join(args.out, f"{prefix}_config.json")
+    with open(config_path, "w") as f:
+        json.dump(real_config(), f, indent=2)
+
     total_params = sum(a.size for a in step0.values())
     print(f"wrote {prefix}_step0.safetensors, {prefix}_step1.safetensors, "
-         f"{prefix}_topology.json ({total_params} params, dims={dims})")
+         f"{prefix}_topology.json, {prefix}_config.json ({total_params} params, dims={dims})")
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ fixtures-small:           ## Generate the MLP + small CNN fixtures (~200 MB)
 	python3 -m venv fixtures/.venv
 	fixtures/.venv/bin/pip install -q -r fixtures/requirements.txt
 	fixtures/.venv/bin/python fixtures/gen_mlp.py    --out fixtures/out
-	fixtures/.venv/bin/python fixtures/gen_resnet.py --out fixtures/out
+	fixtures/.venv/bin/python fixtures/gen_cnn.py    --out fixtures/out
 
 fixtures: fixtures-small  ## Generate all fixtures including the 7B pair (large, slow)
 	fixtures/.venv/bin/python fixtures/gen_7b.py --out fixtures/out

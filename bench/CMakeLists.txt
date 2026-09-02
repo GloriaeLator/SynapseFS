@@ -11,14 +11,22 @@ foreach(src IN LISTS SFS_BENCHES)
     target_link_libraries(bench_${name} PRIVATE
         synapsefs::core synapsefs::util synapsefs::store
         synapsefs::codec synapsefs::stio)
-    # Include-only, not linked: none of these benches call compiled align::
-    # code (sfs_store already went through this exact change -- see
+    # Include-only, not linked, by default: most benches don't call compiled
+    # align:: code (sfs_store already went through this exact change -- see
     # modules/store/CMakeLists.txt). A hard link here would force every
     # bench target through sfs_align's Torch dependency for headers whose
     # symbols (align::MatchReport, GroupMatch, etc.) are only ever used as
     # plain data, never called.
     target_include_directories(bench_${name} PRIVATE
         ${CMAKE_SOURCE_DIR}/modules/align/include)
+    # Exception: residual_codec.cpp calls the REAL, compiled
+    # align::parse_topology_file() (not just plain-data types) to build its
+    # fixtures' topology structurally, same reasoning as
+    # tests/CMakeLists.txt's byte_identity_cnn exception -- genuinely needs
+    # the linked library, and therefore Torch, to build at all.
+    if(name STREQUAL "residual_codec")
+        target_link_libraries(bench_${name} PRIVATE synapsefs::align)
+    endif()
     if(SFS_BUILD_MOUNT)
         target_link_libraries(bench_${name} PRIVATE synapsefs::mount)
     endif()

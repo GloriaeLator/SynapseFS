@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fixtures/gen_resnet.py — the `resnet` row of manifest.toml, minimally.
+"""fixtures/gen_cnn.py — the `cnn` row of manifest.toml, minimally.
 
 A small two-conv-layer CNN: conv2d -> batchnorm2d -> relu -> conv2d ->
 batchnorm2d -> relu -> maxpool2d(2) -> flatten -> linear. Deliberately TWO
@@ -10,10 +10,17 @@ tests/byte_identity_cnn.cpp proved correct in isolation with hand-built
 tensors. This is the same shape, but as a real .safetensors pair on disk, so
 bench/residual_codec.cpp can measure it instead of just prove it works.
 
+Named for what it actually is: this has no skip/residual connections at all
+(previously misnamed gen_resnet.py) — real ResNet-style blocks are optional
+per the PS and out of scope here; this is a plain sequential CNN, which is
+squarely in scope.
+
 Same conventions as gen_mlp.py: nn.Sequential-style numeric tensor names,
-awkward insertion order, a hand-written topology sidecar (spec 13 §2 shape)
-since align/'s real parser output isn't what fixture generation drives —
-permute.py and residual_codec.cpp both consume this sidecar directly.
+awkward insertion order, and TWO topology files for two different consumers
+-- `{prefix}_config.json` is the real `align::topology_parser` "layers"
+schema (real_config()), `{prefix}_topology.json` is the older pre-resolved
+perm_groups/tensors shape permute.py and bench/residual_codec.cpp still
+consume directly (topology_sidecar()).
 """
 import argparse
 import json
@@ -46,10 +53,11 @@ def linear(rng: np.random.Generator, out_dim: int, in_dim: int):
     return w, b
 
 
-def build_resnet(rng: np.random.Generator, in_c: int, g0: int, g1: int, out_dim: int,
-                 spatial: int, k: int = 3):
+def build_cnn(rng: np.random.Generator, in_c: int, g0: int, g1: int, out_dim: int,
+             spatial: int, k: int = 3):
     """indices: 0=conv0 1=bn0 2=relu 3=conv1 4=bn1 5=relu 6=maxpool 7=flatten
-    8=linear -- matches docs/spec/13's own nn.Sequential-index convention.
+    8=linear -- matches docs/spec/13's own nn.Sequential-index convention,
+    and real_config()'s "layers" list below, index for index.
     """
     w0, b0 = conv2d(rng, g0, in_c, k)
     bn0_w, bn0_b, bn0_rm, bn0_rv = batchnorm2d(rng, g0)
@@ -70,21 +78,49 @@ def build_resnet(rng: np.random.Generator, in_c: int, g0: int, g1: int, out_dim:
         "3.weight": w3, "4.weight": bn1_w, "4.bias": bn1_b,
         "8.weight": w8,
     }
-    dims = {"in": in_c, "g0": g0, "g1": g1, "out": out_dim, "flat": flat}
+    dims = {"in": in_c, "g0": g0, "g1": g1, "out": out_dim, "flat": flat,
+           "spatial": spatial, "k": k}
     return tensors, dims
 
 
+def real_config(dims: dict) -> dict:
+    """The actual `align::topology_parser` schema (a flat "layers" list plus
+    a top-level "input_shape", modules/align/src/topology_parser.cpp's
+    walk_layers) -- same k=3/stride=1/padding=1 "same" convolution and
+    maxpool2d(2) this fixture's own tensors use, so the parser's own spatial
+    tracking (needed to derive the flatten's block factor) lines up exactly.
+    Channel counts aren't named here on purpose -- the parser derives them
+    from the checkpoint's own tensor shapes, not from this file.
+    """
+    return {
+        "input_shape": [dims["in"], dims["spatial"], dims["spatial"]],
+        "layers": [
+            {"type": "conv2d", "kernel_size": dims["k"], "stride": 1, "padding": 1},
+            {"type": "batchnorm2d"},
+            {"type": "relu"},
+            {"type": "conv2d", "kernel_size": dims["k"], "stride": 1, "padding": 1},
+            {"type": "batchnorm2d"},
+            {"type": "relu"},
+            {"type": "maxpool2d", "kernel_size": 2},
+            {"type": "flatten"},
+            {"type": "linear"},
+        ],
+    }
+
+
 def topology_sidecar(dims: dict) -> dict:
-    """spec 13 §2 schema, by hand -- same reasoning as gen_mlp.py's: fixture
-    generation doesn't depend on align/topology_parser's actual output,
-    just needs to match its documented shape (confirmed independently by
-    tests/byte_identity_cnn.cpp, which runs the REAL parser against an
-    equivalent architecture and gets exactly this grouping).
+    """spec 13 §2 schema, by hand -- same reasoning as gen_mlp.py's: kept
+    only because permute.py and bench/residual_codec.cpp still hand-parse
+    this pre-resolved shape directly rather than through the real parser
+    (confirmed independently by tests/byte_identity_cnn.cpp, which runs the
+    REAL parser against an equivalent architecture and gets exactly this
+    grouping -- see real_config() above for the schema that actually feeds
+    it).
     """
     return {
         "type": "synapsefs.topology",
         "format_version": 1,
-        "source": {"kind": "synthetic", "arch": "resnet"},
+        "source": {"kind": "synthetic", "arch": "cnn"},
         "perm_groups": {
             "in":  {"size": dims["in"], "pinned": True},
             "g0":  {"size": dims["g0"], "pinned": False},
@@ -132,19 +168,19 @@ def main() -> None:
 
     if args.tiny:
         in_c, g0, g1, out_dim, spatial = 3, 16, 24, 5, 8
-        prefix = "tiny_resnet"
+        prefix = "tiny_cnn"
     else:
         in_c, g0, g1, out_dim, spatial = 3, 64, 96, 10, 32
-        prefix = "resnet"
+        prefix = "cnn"
 
-    step0, dims = build_resnet(rng, in_c, g0, g1, out_dim, spatial)
+    step0, dims = build_cnn(rng, in_c, g0, g1, out_dim, spatial)
 
     step1 = {}
     for name, arr in step0.items():
         noise = (rng.standard_normal(arr.shape) * args.finetune_scale).astype(np.float16)
         step1[name] = (arr.astype(np.float32) + noise.astype(np.float32)).astype(np.float16)
 
-    metadata = {"format": "synapsefs-fixture", "arch": "resnet"}
+    metadata = {"format": "synapsefs-fixture", "arch": "cnn"}
     save_file(step0, os.path.join(args.out, f"{prefix}_step0.safetensors"), metadata)
     save_file(step1, os.path.join(args.out, f"{prefix}_step1.safetensors"), metadata)
 
@@ -152,9 +188,13 @@ def main() -> None:
     with open(topo_path, "w") as f:
         json.dump(topology_sidecar(dims), f, indent=2)
 
+    config_path = os.path.join(args.out, f"{prefix}_config.json")
+    with open(config_path, "w") as f:
+        json.dump(real_config(dims), f, indent=2)
+
     total_params = sum(a.size for a in step0.values())
     print(f"wrote {prefix}_step0.safetensors, {prefix}_step1.safetensors, "
-         f"{prefix}_topology.json ({total_params} params, dims={dims})")
+         f"{prefix}_topology.json, {prefix}_config.json ({total_params} params, dims={dims})")
 
 
 if __name__ == "__main__":

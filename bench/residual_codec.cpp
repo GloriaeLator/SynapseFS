@@ -1,7 +1,7 @@
 /// bench/residual_codec.cpp — docs/benchmarks.md §2.
 ///
 /// Two independent things measured here:
-///   1. --pair <a>,<b> [--topology T --permutation P]: residual ratio for one
+///   1. --pair <a>,<b> [--config C --topology T --permutation P]: residual ratio for one
 ///      checkpoint pair, and the six-candidate {xor,zigzag} x
 ///      {none,byteplane,bitshuffle} experiment ADR 0005 asks for, on the SAME
 ///      bytes. With no --pair, auto-discovers whatever fixture pairs exist
@@ -15,11 +15,22 @@
 /// top-level "candidates" array of {residual, transform, ratio,
 /// decompress_mb_s, compress_mb_s}.
 ///
-/// align/ has no implementation yet (see branch notes), so this reads the
-/// permutation as plain data from fixtures/permute.py's *_topology.json and
-/// *_permuted.permutation.json sidecars rather than calling into it — the
-/// same "precomputed/synthetic permutation" approach used throughout this
-/// branch.
+/// Structure (which axis belongs to which group, block factors, pinning)
+/// comes from the REAL `align::parse_topology_file()` against each fixture's
+/// `*_config.json` -- not hand-parsed. The actual permutation VALUES still
+/// come from fixtures/permute.py's `*_permuted.permutation.json` (a planted
+/// ground truth, not something align::Matcher computes): this file measures
+/// the CODEC given a KNOWN-correct permutation, deliberately independent of
+/// alignment accuracy, which is bench/align_time.cpp's job. Since
+/// permute.py's sidecar keys permutations by ITS OWN topology's group names
+/// (`*_topology.json`, a different, older, pre-resolved schema — see
+/// fixtures/gen_mlp.py's own comment on why two schemas exist), and the real
+/// parser assigns its own internal group names that do not match those,
+/// `bridge_group_name()` below translates "real parser's group for this
+/// tensor+dim" to "permute.py's group name for that same tensor+dim" by
+/// matching on the axis binding itself (dim), not on either side's arbitrary
+/// label -- both schemas describe the identical real axis, they just spell
+/// its group differently.
 
 #include <chrono>
 #include <cstdint>
@@ -35,9 +46,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <synapsefs/align/topology_parser.hpp>
 #include <synapsefs/codec/compress.hpp>
 #include <synapsefs/codec/residual_codec.hpp>
 #include <synapsefs/core/dtype.hpp>
+#include <synapsefs/core/interfaces.hpp>
 #include <synapsefs/format/st_header.hpp>
 #include <synapsefs/util/cpuid.hpp>
 
@@ -87,6 +100,41 @@ Checkpoint load_checkpoint(const fs::path& p) {
     c.header = std::move(*h);
     return c;
 }
+
+/// Wraps an already-loaded Checkpoint as a core::ITensorSource, so
+/// align::parse_topology_file() can read real shapes/dtypes without a
+/// second file load. header_bytes() is never called by the parser (it only
+/// needs meta()/buffer_layout()), same convention as
+/// apps/sfs/header_only_source.hpp's HeaderOnlyTensorSource.
+class CheckpointSource final : public core::ITensorSource {
+public:
+    explicit CheckpointSource(const Checkpoint& c) : c_(c) {
+        layout_ = c_.header.buffer_layout();
+    }
+    std::span<const std::byte> header_bytes() const override { return {}; }
+    std::span<const core::BufferEntry> buffer_layout() const override { return layout_; }
+    const core::TensorMeta* meta(std::string_view name) const override {
+        auto it = c_.header.tensors.find(std::string(name));
+        return it == c_.header.tensors.end() ? nullptr : &it->second;
+    }
+    std::uint64_t total_bytes() const override { return c_.bytes.size(); }
+    core::Result<std::size_t> read_units(std::string_view name, std::uint64_t first,
+                                         std::uint64_t count, std::span<std::byte> out) override {
+        const auto* m = meta(name);
+        if (m == nullptr)
+            return SFS_ERR(ObjectNotFound, "no such tensor", std::string(name));
+        auto ub = m->unit_bytes(0);
+        if (!ub) return std::unexpected(ub.error());
+        const auto bytes = c_.tensor(std::string(name));
+        const std::size_t n = static_cast<std::size_t>(count * (*ub));
+        std::memcpy(out.data(), bytes.data() + first * (*ub), n);
+        return n;
+    }
+
+private:
+    const Checkpoint& c_;
+    std::vector<core::BufferEntry> layout_;
+};
 
 // ---------------------------------------------------- permutation (offline)
 
@@ -150,36 +198,55 @@ std::vector<std::byte> gather_axis(std::span<const std::byte> src, std::uint64_t
 }
 
 struct Sidecar {
-    json topology;     // fixtures/*_topology.json
-    json permutation;  // fixtures/*_permuted.permutation.json ({"groups": {name: [perm]}})
+    core::Topology real_topo;  // parsed for real from fixtures/*_config.json
+    json old_topology;         // fixtures/*_topology.json -- for group-name bridging only
+    json permutation;          // fixtures/*_permuted.permutation.json ({"groups": {name: [perm]}})
 };
 
-// base bytes for `name`, gathered into TARGET unit order using the topology's
-// axis->group bindings and the permutation sidecar's per-group arrays.
-// Identity (raw base bytes) when no sidecar is given, or for axes bound to a
-// pinned group (absent from the sidecar's "groups", by construction —
-// fixtures/permute.py only emits non-pinned groups).
+// permute.py's *_permuted.permutation.json keys permutations by the OLD
+// schema's (hand-picked) group names, but we now walk axes via the REAL
+// parser's Topology, which assigns its own internal names -- see this
+// file's header comment. Both schemas describe the same real tensor+dim
+// axis, just spell its group differently, so bridge by looking up which OLD
+// group owns this exact (tensor, dim) pair.
+std::optional<std::string> bridge_group_name(const json& old_topology, const std::string& tensor,
+                                             std::uint32_t dim) {
+    const auto tit = old_topology["tensors"].find(tensor);
+    if (tit == old_topology["tensors"].end()) return std::nullopt;
+    for (const auto& axis : tit.value()["axes"]) {
+        if (axis.at("dim").get<std::uint32_t>() == dim) return axis.at("group").get<std::string>();
+    }
+    return std::nullopt;
+}
+
+// base bytes for `name`, gathered into TARGET unit order using the REAL
+// topology's axis->group bindings (structure) and the permutation sidecar's
+// per-(bridged)-group arrays (values). Identity (raw base bytes) when no
+// sidecar is given, or for axes bound to a pinned group.
 std::vector<std::byte> align_to_target(const std::string& name, std::span<const std::byte> base,
                                        const std::vector<std::uint64_t>& shape,
                                        std::uint32_t elem_bytes, const Sidecar* sc) {
     std::vector<std::byte> cur(base.begin(), base.end());
     if (sc == nullptr) return cur;
-    const auto tit = sc->topology["tensors"].find(name);
-    if (tit == sc->topology["tensors"].end()) return cur;
+    const auto tit = sc->real_topo.tensors.find(name);
+    if (tit == sc->real_topo.tensors.end()) return cur;
 
     const std::uint64_t rows = shape.empty() ? 1 : shape[0];
     const std::uint64_t cols = shape.size() >= 2 ? shape[1] : 1;
 
-    for (const auto& axis : tit.value()["axes"]) {
-        const auto group = axis.at("group").get<std::string>();
-        const auto git = sc->permutation["groups"].find(group);
-        if (git == sc->permutation["groups"].end()) continue;  // pinned: identity
+    for (const auto& axis : tit->second.axes) {
+        const auto* pg = sc->real_topo.find_group(axis.group);
+        if (pg != nullptr && pg->pinned) continue;  // identity
+
+        const auto old_name = bridge_group_name(sc->old_topology, name, axis.dim);
+        if (!old_name) continue;  // no equivalent axis in the old sidecar: identity
+        const auto git = sc->permutation["groups"].find(*old_name);
+        if (git == sc->permutation["groups"].end()) continue;  // pinned on the old side too
+
         const auto perm = git.value().get<std::vector<std::uint32_t>>();
-        const auto block = axis.value("block", 1u);
-        const auto expanded = expand_permutation(perm, block);
-        const auto dim = axis.at("dim").get<std::uint32_t>();
-        const auto trailing = trailing_elems(shape, dim);
-        cur = gather_axis(cur, rows, cols, trailing, elem_bytes, dim, expanded);
+        const auto expanded = expand_permutation(perm, axis.block);
+        const auto trailing = trailing_elems(shape, axis.dim);
+        cur = gather_axis(cur, rows, cols, trailing, elem_bytes, axis.dim, expanded);
     }
     return cur;
 }
@@ -288,7 +355,7 @@ std::vector<Candidate> six_candidates(const std::string& pair_label,
 
 struct PairSpec {
     std::string label, base_path, target_path;
-    std::optional<std::string> topology_path, permutation_path;
+    std::optional<std::string> config_path, topology_path, permutation_path;
 };
 
 void run_pair(const PairSpec& spec, std::vector<Candidate>& all_candidates, json& pairs_out) {
@@ -297,8 +364,15 @@ void run_pair(const PairSpec& spec, std::vector<Candidate>& all_candidates, json
 
     std::optional<Sidecar> sc_storage;
     const Sidecar* sc = nullptr;
-    if (spec.topology_path && spec.permutation_path) {
-        sc_storage = Sidecar{read_json(*spec.topology_path), read_json(*spec.permutation_path)};
+    if (spec.config_path && spec.topology_path && spec.permutation_path) {
+        CheckpointSource target_source(target);
+        auto real_topo = align::parse_topology_file(target_source, *spec.config_path);
+        if (!real_topo) {
+            throw std::runtime_error("parsing " + *spec.config_path + ": " +
+                                     real_topo.error().to_string());
+        }
+        sc_storage = Sidecar{std::move(*real_topo), read_json(*spec.topology_path),
+                             read_json(*spec.permutation_path)};
         sc = &*sc_storage;
     }
 
@@ -364,15 +438,17 @@ std::vector<PairSpec> discover_pairs(const fs::path& dir) {
         const auto step0 = dir / (prefix + "_step0.safetensors");
         const auto step1 = dir / (prefix + "_step1.safetensors");
         const auto permuted = dir / (prefix + "_permuted.safetensors");
+        const auto config = dir / (prefix + "_config.json");
         const auto topology = dir / (prefix + "_topology.json");
         const auto permutation = dir / (prefix + "_permuted.permutation.json");
 
         if (fs::exists(step1))
             out.push_back({prefix + "_finetune", step0.string(), step1.string(), std::nullopt,
-                          std::nullopt});
-        if (fs::exists(permuted) && fs::exists(topology) && fs::exists(permutation))
+                          std::nullopt, std::nullopt});
+        if (fs::exists(permuted) && fs::exists(config) && fs::exists(topology) &&
+            fs::exists(permutation))
             out.push_back({prefix + "_permuted_only", step0.string(), permuted.string(),
-                          topology.string(), permutation.string()});
+                          config.string(), topology.string(), permutation.string()});
     }
     return out;
 }
@@ -419,7 +495,7 @@ struct Args {
     bool json = false;
     bool kernel_only = false;
     std::size_t bytes = 64ull << 20;
-    std::optional<std::string> pair_a, pair_b, topology, permutation;
+    std::optional<std::string> pair_a, pair_b, config, topology, permutation;
     std::string fixtures_dir = "fixtures/out";
 };
 
@@ -436,6 +512,7 @@ Args parse_args(int argc, char** argv) {
         else if (arg == "--kernel-only") a.kernel_only = true;
         else if (arg == "--bytes") { if (auto v = take_value(argc, argv, i)) a.bytes = std::stoull(*v); }
         else if (arg == "--fixtures-dir") { if (auto v = take_value(argc, argv, i)) a.fixtures_dir = *v; }
+        else if (arg == "--config") a.config = take_value(argc, argv, i);
         else if (arg == "--topology") a.topology = take_value(argc, argv, i);
         else if (arg == "--permutation") a.permutation = take_value(argc, argv, i);
         else if (arg == "--pair") {
@@ -465,7 +542,8 @@ int main(int argc, char** argv) {
 
     std::vector<PairSpec> specs;
     if (args.pair_a && args.pair_b) {
-        specs.push_back({"pair", *args.pair_a, *args.pair_b, args.topology, args.permutation});
+        specs.push_back({"pair", *args.pair_a, *args.pair_b, args.config, args.topology,
+                        args.permutation});
     } else {
         specs = discover_pairs(args.fixtures_dir);
         if (specs.empty()) {

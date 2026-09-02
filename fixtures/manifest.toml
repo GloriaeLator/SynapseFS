@@ -25,12 +25,12 @@ generator   = "permute.py"
 source      = "mlp_step0.safetensors"
 purpose     = "function-identical, 100% byte-different. The headline demo, and the fixture that proves alignment works at all"
 
-[resnet]
-generator   = "gen_resnet.py"
+[cnn]
+generator   = "gen_cnn.py"
 params      = "~11M"
 dtype       = "F16"
 size        = "~22 MiB"
-purpose     = "conv + batchnorm + residual groups, and the flatten blocking factor"
+purpose     = "conv + batchnorm groups and the flatten blocking factor (no skip connections -- real ResNet-style residual blocks are optional per the PS and out of scope here)"
 
 [llm_7b]
 generator   = "gen_7b.py"
