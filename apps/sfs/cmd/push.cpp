@@ -22,6 +22,12 @@ namespace sfs::app::cmd{
                              "interrupted)\n";
                 return ExitCode::Network;
             }
+            // net::push() returns a plain bool -- no object count to report,
+            // unlike pull's per-object "Successfully synced" lines (those
+            // come from the RECEIVER's own write path in synapse_sync.cpp,
+            // which during a push is the remote server, not this terminal).
+            // Still worth a visible confirmation instead of silent success.
+            std::cout << "Pushed to " << remote_url << "\n";
             return ExitCode::Ok;
         }
     }
