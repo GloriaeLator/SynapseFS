@@ -123,10 +123,10 @@ secondary-axis gather, and this very bench tool's own `gather_axis`) before
 each was fixed to account for the trailing `kh×kw` block that has to move
 with each in-channel index rather than being treated as a bare scalar.
 
-Command: `bench_residual_codec --pair tiny_cnn_step0.safetensors,tiny_cnn_permuted.safetensors --config tiny_cnn_config.json --topology tiny_cnn_topology.json --permutation tiny_cnn_permuted.permutation.json --json`
+Command: `bench_residual_codec --pair tiny_cnn_step0.safetensors,tiny_cnn_permuted.safetensors --config tiny_cnn_layers_config.json --topology tiny_cnn_topology.json --permutation tiny_cnn_permuted.permutation.json --json`
 
 Topology structure now comes from the REAL `align::parse_topology_file()`
-against `tiny_cnn_config.json` (the actual `"layers"` schema), not a
+against `tiny_cnn_layers_config.json` (the actual `"layers"` schema), not a
 hand-parsed sidecar — confirmed to produce the byte-identical ratio
 (0.00158) as before the switch, including through the rank-4/multi-axis
 case, which is the strongest evidence this integration is correct rather

@@ -17,7 +17,7 @@
 ///
 /// Structure (which axis belongs to which group, block factors, pinning)
 /// comes from the REAL `align::parse_topology_file()` against each fixture's
-/// `*_config.json` -- not hand-parsed. The actual permutation VALUES still
+/// `*_layers_config.json` -- not hand-parsed. The actual permutation VALUES still
 /// come from fixtures/permute.py's `*_permuted.permutation.json` (a planted
 /// ground truth, not something align::Matcher computes): this file measures
 /// the CODEC given a KNOWN-correct permutation, deliberately independent of
@@ -198,7 +198,7 @@ std::vector<std::byte> gather_axis(std::span<const std::byte> src, std::uint64_t
 }
 
 struct Sidecar {
-    core::Topology real_topo;  // parsed for real from fixtures/*_config.json
+    core::Topology real_topo;  // parsed for real from fixtures/*_layers_config.json
     json old_topology;         // fixtures/*_topology.json -- for group-name bridging only
     json permutation;          // fixtures/*_permuted.permutation.json ({"groups": {name: [perm]}})
 };
@@ -438,7 +438,7 @@ std::vector<PairSpec> discover_pairs(const fs::path& dir) {
         const auto step0 = dir / (prefix + "_step0.safetensors");
         const auto step1 = dir / (prefix + "_step1.safetensors");
         const auto permuted = dir / (prefix + "_permuted.safetensors");
-        const auto config = dir / (prefix + "_config.json");
+        const auto config = dir / (prefix + "_layers_config.json");
         const auto topology = dir / (prefix + "_topology.json");
         const auto permutation = dir / (prefix + "_permuted.permutation.json");
 

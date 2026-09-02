@@ -17,8 +17,9 @@ generator   = "gen_mlp.py"
 params      = "~1M"
 dtype       = "F16"
 size        = "~2 MiB"
-outputs     = ["mlp_step0.safetensors", "mlp_step1.safetensors", "mlp_permuted.safetensors"]
+outputs     = ["mlp_step0.safetensors", "mlp_step1.safetensors", "mlp_topology.json", "mlp_layers_config.json"]
 purpose     = "Day 2: every module works here before anything else is tried"
+note        = "mlp_topology.json (perm_groups/tensors) is for permute.py / bench/residual_codec.cpp; mlp_layers_config.json (layers array) is for `sfs commit --topology`"
 
 [mlp_permuted]
 generator   = "permute.py"
@@ -30,7 +31,9 @@ generator   = "gen_cnn.py"
 params      = "~11M"
 dtype       = "F16"
 size        = "~22 MiB"
+outputs     = ["cnn_step0.safetensors", "cnn_step1.safetensors", "cnn_topology.json", "cnn_layers_config.json"]
 purpose     = "conv + batchnorm groups and the flatten blocking factor (no skip connections -- real ResNet-style residual blocks are optional per the PS and out of scope here)"
+note        = "cnn_topology.json (perm_groups/tensors) is for permute.py / bench/residual_codec.cpp; cnn_layers_config.json (layers array) is for `sfs commit --topology`"
 
 [llm_7b]
 generator   = "gen_7b.py"
