@@ -75,11 +75,13 @@ def build_resnet(rng: np.random.Generator, in_c: int, g0: int, g1: int, out_dim:
 
 
 def topology_sidecar(dims: dict) -> dict:
-    """spec 13 §2 schema, by hand -- same reasoning as gen_mlp.py's: fixture
-    generation doesn't depend on align/topology_parser's actual output,
-    just needs to match its documented shape (confirmed independently by
-    tests/byte_identity_cnn.cpp, which runs the REAL parser against an
-    equivalent architecture and gets exactly this grouping).
+    """spec 13 §2 perm-groups/tensors schema -- same reasoning as
+    gen_mlp.py's: NOT what align/topology_parser.cpp (`sfs commit
+    --topology`) reads (see layers_config() below for that). This is for
+    permute.py and bench/residual_codec.cpp, which want the axis->group
+    mapping directly (confirmed independently by tests/byte_identity_cnn.cpp,
+    which runs the REAL parser against an equivalent architecture and gets
+    exactly this grouping).
     """
     return {
         "type": "synapsefs.topology",
@@ -119,6 +121,37 @@ def topology_sidecar(dims: dict) -> dict:
     }
 
 
+def layers_config(in_c: int, spatial: int, k: int = 3) -> dict:
+    """SPEC 13 "layers" array -- the schema align/topology_parser.cpp's
+    parse_topology() actually reads for `sfs commit --topology`. Mirrors
+    build_resnet()'s conv0 -> bn0 -> relu -> conv1 -> bn1 -> relu ->
+    maxpool2d(2) -> flatten -> linear chain index-for-index (same
+    nn.Sequential numbering as the tensor names, e.g. "3.weight" is layer
+    index 3). padding=(k-1)//2, stride=1 keeps each conv2d's spatial size
+    unchanged, matching build_resnet()'s own assumption that only the
+    maxpool2d halves H/W (dims["flat"] = g1 * pooled * pooled) -- get this
+    out of sync with build_resnet() and the parser's tracked (C,H,W) will
+    disagree with the real flatten width, though the axis union itself
+    (block = len / group_size, derived from actual tensor shapes) still
+    comes out correct regardless.
+    """
+    pad = (k - 1) // 2
+    return {
+        "input_shape": [in_c, spatial, spatial],
+        "layers": [
+            {"type": "conv2d", "kernel_size": k, "stride": 1, "padding": pad},
+            {"type": "batchnorm2d"},
+            {"type": "relu"},
+            {"type": "conv2d", "kernel_size": k, "stride": 1, "padding": pad},
+            {"type": "batchnorm2d"},
+            {"type": "relu"},
+            {"type": "maxpool2d", "kernel_size": 2},
+            {"type": "flatten"},
+            {"type": "linear"},
+        ],
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", required=True, help="output directory (e.g. fixtures/out)")
@@ -152,9 +185,17 @@ def main() -> None:
     with open(topo_path, "w") as f:
         json.dump(topology_sidecar(dims), f, indent=2)
 
+    layers_path = os.path.join(args.out, f"{prefix}_layers_config.json")
+    with open(layers_path, "w") as f:
+        json.dump(layers_config(in_c, spatial), f, indent=2)
+
     total_params = sum(a.size for a in step0.values())
     print(f"wrote {prefix}_step0.safetensors, {prefix}_step1.safetensors, "
-         f"{prefix}_topology.json ({total_params} params, dims={dims})")
+         f"{prefix}_topology.json, {prefix}_layers_config.json "
+         f"({total_params} params, dims={dims})")
+    print(f"note: pass {prefix}_layers_config.json to `sfs commit --topology` "
+         f"-- {prefix}_topology.json is a different schema for permute.py / "
+         f"bench/residual_codec.cpp only")
 
 
 if __name__ == "__main__":

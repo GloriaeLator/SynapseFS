@@ -63,10 +63,13 @@ def build_mlp(rng: np.random.Generator, in_dim: int, h1: int, h2: int, out_dim: 
 
 
 def topology_sidecar(dims: dict) -> dict:
-    """spec 13 §2 schema, by hand — align/'s real parser doesn't exist yet
-    (see conversation notes); this is the same shape it would eventually
-    produce for this exact architecture, hand-written so codec benchmarking
-    isn't blocked on it.
+    """spec 13 §2 perm-groups/tensors schema — NOT what align/topology_parser.cpp
+    (`sfs commit --topology`) reads. That parser only understands the plain
+    "layers" array produced by layers_config() below. This sidecar exists for
+    tools that need the axis->group mapping directly instead of deriving it
+    from a layer list: permute.py (ground-truth permutation per group) and
+    bench/residual_codec.cpp (residual-ratio benchmarking) both consume it
+    as-is via --topology on their own CLIs, unrelated to `sfs commit`.
     """
     return {
         "type": "synapsefs.topology",
@@ -89,6 +92,26 @@ def topology_sidecar(dims: dict) -> dict:
                                   {"dim": 1, "group": "g2", "block": 1}]},
             "4.bias":   {"axes": [{"dim": 0, "group": "out", "block": 1}]},
         },
+    }
+
+
+def layers_config() -> dict:
+    """SPEC 13 "layers" array — the schema align/topology_parser.cpp's
+    parse_topology() actually reads for `sfs commit --topology`. Plain
+    Linear -> ReLU -> Linear -> ReLU -> Linear chain, index-addressed the
+    same way build_mlp()'s tensor names are ("0.weight"/"0.bias" is layer
+    index 0, etc.), so this file lines up with mlp_step0.safetensors and
+    mlp_step1.safetensors directly. No per-layer options needed: linear
+    layers derive in/out width from the weight tensor's own shape.
+    """
+    return {
+        "layers": [
+            {"type": "linear"},
+            {"type": "relu"},
+            {"type": "linear"},
+            {"type": "relu"},
+            {"type": "linear"},
+        ]
     }
 
 
@@ -130,9 +153,17 @@ def main() -> None:
     with open(topo_path, "w") as f:
         json.dump(topology_sidecar(dims), f, indent=2)
 
+    layers_path = os.path.join(args.out, f"{prefix}_layers_config.json")
+    with open(layers_path, "w") as f:
+        json.dump(layers_config(), f, indent=2)
+
     total_params = sum(a.size for a in step0.values())
     print(f"wrote {prefix}_step0.safetensors, {prefix}_step1.safetensors, "
-         f"{prefix}_topology.json ({total_params} params, dims={dims})")
+         f"{prefix}_topology.json, {prefix}_layers_config.json "
+         f"({total_params} params, dims={dims})")
+    print(f"note: pass {prefix}_layers_config.json to `sfs commit --topology` "
+         f"-- {prefix}_topology.json is a different schema for permute.py / "
+         f"bench/residual_codec.cpp only")
 
 
 if __name__ == "__main__":
