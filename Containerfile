@@ -10,6 +10,14 @@ FROM ${TORCH_IMAGE} AS build
 ARG BLAKE3_TAG=1.8.7
 ARG ENABLE_LTO=OFF
 ARG BUILD_MOUNT=ON
+ARG BUILD_TESTS=OFF
+# Default to $(nproc) via empty string below, but override on a
+# memory-constrained host: each translation unit including <torch/torch.h>
+# can use 1-2+ GB by itself, and launching one per core can overcommit a
+# WSL2/Docker Desktop VM's RAM allocation badly enough to thrash (swap)
+# rather than actually compile faster -- a real build that "hangs" for
+# hours, not minutes, almost always means this, not a genuinely slow build.
+ARG BUILD_JOBS=
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -57,12 +65,12 @@ RUN cmake -S . -B build/release -G Ninja \
       -DCMAKE_PROJECT_synapsefs_INCLUDE=/opt/sfs_find_torch.cmake \
       -DCMAKE_DISABLE_FIND_PACKAGE_zstd=ON \
       -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-      -DSFS_BUILD_TESTS=OFF \
+      -DSFS_BUILD_TESTS="${BUILD_TESTS}" \
       -DSFS_BUILD_BENCH=OFF \
       -DSFS_BUILD_MOUNT="${BUILD_MOUNT}" \
       -DSFS_ENABLE_SIMD=ON \
       -DSFS_ENABLE_LTO="${ENABLE_LTO}" \
-    && cmake --build build/release -j "$(nproc)" \
+    && cmake --build build/release -j "${BUILD_JOBS:-$(nproc)}" \
     && cmake --install build/release --prefix /out
 
 # -------------------------------------------------------------- runtime stage

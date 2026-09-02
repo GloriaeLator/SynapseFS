@@ -18,7 +18,7 @@ namespace sfs::app::cmd {
 
 namespace {
 
-int run_gc(bool prune, bool pack, bool dry_run) {
+int run_gc(bool prune, bool dry_run) {
     auto paths = core::RepoPaths::discover(std::filesystem::current_path());
     if (!paths) {
         std::cerr << "error: not a synapsefs repository\n";
@@ -43,7 +43,6 @@ int run_gc(bool prune, bool pack, bool dry_run) {
 
     store::GcOptions opts;
     opts.prune = prune;
-    opts.pack = pack;
     opts.dry_run = dry_run;
 
     // gc() takes the exclusive lock itself, so nothing is acquired here.
@@ -67,13 +66,11 @@ int run_gc(bool prune, bool pack, bool dry_run) {
 
 void register_gc(CLI::App& app, int& exit_code) {
     static bool prune = false;
-    static bool pack = false;
     static bool dry_run = false;
     auto* c = app.add_subcommand("gc", "Clean up temp files and unreachable objects");
     c->add_flag("--prune", prune, "Delete objects no ref reaches");
-    c->add_flag("--pack", pack, "Rewrite reachable loose objects into a packfile");
     c->add_flag("-n,--dry-run", dry_run, "Report what would be removed, remove nothing");
-    c->callback([&exit_code] { exit_code = run_gc(prune, pack, dry_run); });
+    c->callback([&exit_code] { exit_code = run_gc(prune, dry_run); });
 }
 
 }  // namespace sfs::app::cmd

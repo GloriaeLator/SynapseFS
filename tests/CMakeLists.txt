@@ -23,8 +23,23 @@ file(GLOB SFS_INTEGRATION_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*
 foreach(src IN LISTS SFS_INTEGRATION_TESTS)
     get_filename_component(name ${src} NAME_WE)
     add_executable(${name} ${src})
-    target_link_libraries(${name} PRIVATE
-        sfs_test_common synapsefs::align synapsefs::stio synapsefs::net)
+    target_link_libraries(${name} PRIVATE sfs_test_common synapsefs::stio)
+    # Most integration tests only need align::MatchReport/GroupMatch as
+    # hand-built plain data (never a real align::Matcher run) and no net::
+    # symbols at all -- include-only, not linked, so this whole directory
+    # stays buildable without Torch by default (same reasoning as
+    # modules/store's and bench/'s own align decoupling).
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_SOURCE_DIR}/modules/align/include
+        ${CMAKE_SOURCE_DIR}/modules/net/include)
+    # Exception: byte_identity_cnn.cpp calls the REAL, compiled
+    # align::parse_topology() (not just its plain-data types), so it
+    # genuinely needs the linked library -- and therefore Torch -- to build
+    # at all. Add any future test with the same need here, not to the
+    # blanket link above.
+    if(name STREQUAL "byte_identity_cnn")
+        target_link_libraries(${name} PRIVATE synapsefs::align)
+    endif()
     if(SFS_BUILD_MOUNT)
         target_link_libraries(${name} PRIVATE synapsefs::mount)
     endif()

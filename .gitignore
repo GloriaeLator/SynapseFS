@@ -2,6 +2,8 @@ build/
 install/
 vcpkg_installed/
 fixtures/out/
+modules/align/tests/fixtures/mlp_end_to_end/
+modules/align/tests/fixtures/mlp_large_sparse/
 *.o
 *.obj
 *.a

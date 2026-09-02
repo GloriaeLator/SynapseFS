@@ -157,14 +157,6 @@ Result<GcReport> gc(core::IBlockStore& blocks, CommitStore& commits, ManifestSto
         report.bytes_reclaimed += sz;
     }
 
-    if (opts.pack) {
-        // Packfiles are additive and explicitly optional (ADR 0006); the
-        // loose store is the reference implementation and journal.cpp's pack
-        // recovery is likewise unimplemented. Reporting zero packed is
-        // honest; silently succeeding would not be.
-        return SFS_ERR(NotImplemented, "gc --pack is not implemented in this build");
-    }
-
     return report;
 }
 

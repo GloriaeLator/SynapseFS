@@ -15,8 +15,12 @@
 
 namespace sfs::store {
 
+// Packfiles were cut (ADR 0006: "additive... if we fall behind, packfiles are
+// on the cut list and the cut costs a performance number, not a feature") --
+// not required by the PS (gc isn't even in its required CLI list), so
+// GcOptions::pack / GcReport::packed and the --pack flag were removed rather
+// than left as a dead, always-erroring option.
 struct GcOptions {
-    bool pack    = false;   ///< rewrite reachable loose objects into a packfile
     bool prune   = false;   ///< delete unreachable objects
     bool dry_run = false;
 };
@@ -26,7 +30,6 @@ struct GcReport {
     std::uint64_t objects_pruned  = 0;
     std::uint64_t bytes_reclaimed = 0;
     std::uint64_t temp_files_removed = 0;
-    std::uint64_t packed = 0;
 };
 
 [[nodiscard]] Result<GcReport> gc(core::IBlockStore&, CommitStore&, ManifestStore&,
