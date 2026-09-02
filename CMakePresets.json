@@ -8,10 +8,11 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "installDir": "${sourceDir}/install/${presetName}",
-      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "VCPKG_MANIFEST_MODE": "ON"
+        "CMAKE_CXX_COMPILER": "$env{SFS_CXX}",
+        "CMAKE_C_COMPILER": "$env{SFS_CC}",
+        "CMAKE_PREFIX_PATH": "$env{SFS_TORCH_CMAKE_PREFIX_PATH}"
       },
       "condition": {
         "type": "equals",

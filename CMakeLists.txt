@@ -1,10 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 
-# See docs/adr/0009-vcpkg-vs-fetchcontent.md.
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
-  set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-      CACHE STRING "vcpkg toolchain file")
-endif()
+# vcpkg intentionally not used (see docs/adr/0009-vcpkg-vs-fetchcontent.md for
+# the original rationale). All dependencies below are resolved purely through
+# the system package manager (apt/pacman/dnf) via find_package/pkg-config, so
+# no CMAKE_TOOLCHAIN_FILE or VCPKG_ROOT is needed or read.
 
 project(synapsefs
   VERSION 0.1.0

@@ -39,6 +39,13 @@ docker build -t synapsefs -f Containerfile . && docker run --rm synapsefs --vers
 # To build with podman see [build.md](docs/build.md).
 ```
 
+Everything below except `sfs mount` works in a plain `docker run --rm synapsefs
+...`. `mount` needs the container started with `--cap-add SYS_ADMIN --device
+/dev/fuse` (e.g. `docker run --rm -it --cap-add SYS_ADMIN --device /dev/fuse
+synapsefs bash`) — without it, the mount fails outright rather than
+succeeding partially, and looks like a hang if a script is polling for the
+mounted file to appear.
+
 ```bash
 # Generate the small fixtures (checkpoints are never committed to git)
 make fixtures-small
