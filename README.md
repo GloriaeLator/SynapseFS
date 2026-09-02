@@ -4,7 +4,7 @@ Permutation-aware, cryptographically verifiable version control and virtual
 filesystem for neural network checkpoints.
 
 Git stores a fine-tuned checkpoint as a whole new blob. SynapseFS stores it as
-a delta — after recovering the neuron correspondence between the two
+a delta - after recovering the neuron correspondence between the two
 checkpoints, so that a model which was merely *permuted* costs almost nothing.
 Reconstruction is **byte-for-byte**, headers and metadata included, and the
 result is readable through a read-only POSIX mount that
@@ -34,13 +34,9 @@ SynapseFS recovers the permutation, applies it, and stores what is left.
 ## Quick start
 
 ```bash
-# Build (see docs/build.md for prerequisites)
-export VCPKG_ROOT=/path/to/vcpkg
-cmake --preset dev && cmake --build --preset dev -j"$(nproc)"
-./build/dev/apps/sfs/sfs --version
-
-# Or, with zero host setup:
-docker build -t synapsefs . && docker run --rm synapsefs --version
+# Build container with Docker
+docker build -t synapsefs -f Containerfile . && docker run --rm synapsefs --version
+# To build with podman see [build.md](docs/build.md).
 ```
 
 ```bash
@@ -51,13 +47,13 @@ make fixtures-small
 sfs init myrepo && cd myrepo
 sfs commit ../fixtures/out/mlp_step0.safetensors -m "initial"
 sfs commit ../fixtures/out/mlp_step1.safetensors -m "after fine-tune"
-sfs log --graph
+sfs log
 
 # Prove it round-trips
-sfs checkout HEAD --out /tmp/restored.safetensors
+sfs checkout HEAD -o /tmp/restored.safetensors
 cmp /tmp/restored.safetensors ../fixtures/out/mlp_step1.safetensors && echo "byte-identical"
 
-# Integrity, standalone — no checkout, no mount
+# Integrity, standalone - no checkout, no mount
 sfs verify --full
 
 # Mount it and load it with torch, with nothing materialised on disk
@@ -73,29 +69,39 @@ sfs unmount /tmp/mnt
 | Command | What it does |
 |---|---|
 | `sfs init [<path>]` | Create a repository. |
-| `sfs commit <ckpt.safetensors> -m <msg>` | Align against the parent, store the delta, write a commit. `--no-delta` forces full storage. |
-| `sfs checkout <ref> [--out <path>]` | Switch branch, or materialise a checkpoint file. |
-| `sfs branch [<name>] [-d <name>]` | Create or list. Switching is `checkout <branch>` (pre-2.23 git semantics). |
-| `sfs log [<ref>] [--graph]` | Walk history. |
-| `sfs verify [<ref>] [--full] [--repair]` | Integrity check. **Works standalone.** Exits 4 on corruption, naming the object and chunk. |
+| `sfs commit <ckpt.safetensors> -m <msg>` | Align against the parent, store the delta, write a commit. Any alignment failure falls back silently to full storage - see [architecture.md](docs/architecture.md). |
+| `sfs checkout <ref> [-o/--output <path>]` | Switch branch, or materialise a checkpoint file. |
+| `sfs branch [<name>] [<start-point>] [-d/--delete <name>] [-f/--force]` | Create or list. Switching is `checkout <branch>` (pre-2.23 git semantics). |
+| `sfs log [<ref>] [-n/--max-count <N>]` | Walk history. |
+| `sfs verify [<ref>] [--full] [--repair]` | Integrity check. **Works standalone.** Exits 4 on corruption, naming the object and, for a `--full` chunk-level failure, the chunk index too (see [threat_model.md](docs/threat_model.md)). |
 | `sfs merge <branch> [--ours\|--theirs]` | Fast-forward, or three-way per tensor group. Refuses on conflict. |
-| `sfs serve [--listen host:port]` | Start the sync listener. Default `127.0.0.1:9418`. |
-| `sfs push <url> [<branch>]` | Send only the blocks the peer lacks. |
-| `sfs pull <url> [<branch>]` | Fetch only the blocks we lack. Resumable. |
+| `sfs serve [-p/--port <port>]` | Start the sync listener. Defaults `-p` to `9418`, matching `RepoConfig`; see [spec/14](docs/spec/14-wire-protocol.md). |
+| `sfs push <ip:port>` | Sync the local repo to a listening peer. Exits `Network`(8) on a connection/transfer failure - see [spec/15](docs/spec/15-cli-contract.md). |
+| `sfs pull <ip:port>` | Sync from a listening peer. Resumable by byte offset; received objects are hash-verified against their own address before being kept, refs are not - run `sfs verify --full` afterward regardless. Exits `Network`(8) on any transfer or integrity failure. |
 | `sfs mount <ref> <mountpoint>` | Read-only FUSE mount. Nothing is written to disk. |
 | `sfs unmount <mountpoint>` | Unmount. |
-| `sfs gc [--pack] [--prune]` | Repack and reclaim. |
+| `sfs gc [--prune] [--pack] [-n/--dry-run]` | Reclaim unreachable objects. `--pack` is not implemented yet (returns `NotImplemented`). |
 
 Full flag reference and exit codes: **[docs/spec/15-cli-contract.md](docs/spec/15-cli-contract.md)**.
 
 ### Networking
 
-`sfs serve` listens on `127.0.0.1:9418` by default. Override with
-`--listen <host>:<port>` or by setting `listen` in `.synapsefs/config`.
-The peer connects with `sfs push http://host:port` / `sfs pull …`.
-Transport is plain TCP with length-prefixed frames; there is no authentication
-or encryption, which is a deliberate scope decision — see
-[docs/threat_model.md](docs/threat_model.md).
+`sfs serve -p <port>` starts a single-connection-at-a-time TCP listener
+(defaults to `9418` if `-p` is omitted); the peer connects with `sfs push
+<ip:port>` / `sfs pull <ip:port>` - a bare `ip:port` string, not a URL, with
+no authentication or encryption (a deliberate scope decision). This is a
+custom plaintext, newline-delimited protocol that decides *what* to
+transfer by comparing file **size** (not a content hash) - that part is
+unchanged. What it does with the bytes once received differs by kind:
+a received loose object is re-hashed against its own claimed BLAKE3 address
+before being kept, and the transfer is rejected if it doesn't match; refs,
+`HEAD`, and the journal are still accepted on raw size/content equality
+alone with no hash check at all. Treat a pulled repository as unverified
+overall until `sfs verify --full` passes - object payloads are checked in
+transit, but the ancestor-invariant/chain-depth walk `sfs verify` performs
+is not. A failed `push`/`pull` exits `ExitCode::Network` (8) instead of
+looking identical to success. See [docs/spec/14-wire-protocol.md](docs/spec/14-wire-protocol.md)
+and [docs/threat_model.md](docs/threat_model.md).
 
 ---
 
@@ -113,7 +119,7 @@ or encryption, which is a deliberate scope decision — see
                             diff artifact:  permutation + framed residuals
                                                │
                                                ▼
-   content-addressable store  ─── BLAKE3 ───►  Merkle DAG (commit → manifest → blocks)
+   content-addressable store  ─── BLAKE3 ───►  Merkle DAG (commit -> manifest -> blocks)
                                                │
                         ┌──────────────────────┴──────────────────────┐
                         ▼                                             ▼
@@ -136,7 +142,7 @@ output units, so serving one 4 KiB page fault touches ~0.8 MB instead of
 **Verification granularity equals read granularity.** Per-chunk digests inside
 every block, plus a digest of the reconstructed bytes on every residual frame.
 Tamper detection survives the reconstruction path and costs proportional to
-what was actually read — 183.9 MB/s instead of 0.6 MB/s.
+what was actually read - 183.9 MB/s instead of 0.6 MB/s.
 ([SPEC 11](docs/spec/11-repo-layout.md))
 
 **Checkout and mount call the same function.** `read_range` is the only
@@ -155,18 +161,17 @@ graph rather than a test that happens to pass.
 | [storage_format.md](docs/storage_format.md) | Objects, framing, chunking, crash safety |
 | [tradeoffs.md](docs/tradeoffs.md) | Every choice, with the measurement behind it |
 | [threat_model.md](docs/threat_model.md) | What we detect, what is out of scope, and why |
-| [benchmarks.md](docs/benchmarks.md) | The five graded numbers, the hardware, the commands |
+| [benchmarks.md](docs/benchmarks.md) | What the bench binaries measure, the hardware, the commands |
 | [build.md](docs/build.md) · [testing.md](docs/testing.md) | Building and testing |
-| [spec/](docs/spec/) | Normative format specifications |
+| [spec/](docs/spec/) | Format specifications, as implemented |
 | [adr/](docs/adr/) | Architecture decision records |
-| [ownership.md](docs/ownership.md) | Who owns what, and who to ask |
 
 ---
 
 ## Repository layout
 
 ```
-modules/          nine libraries, in dependency order
+modules/          
   util/           atomic I/O, mmap, thread pool, CPUID, logging
   core/           object ids, errors, dtypes, interfaces  ← depends on nothing
   format/         on-disk object encode/decode
@@ -175,28 +180,16 @@ modules/          nine libraries, in dependency order
   align/          topology parser, cost, LAP, propagation, confidence
   codec/          permute, residual encode/decode, SIMD kernels, chunking
   mount/          FUSE low-level daemon, inode table, block cache, prefetch
-  net/            framing, have/want negotiation, server, client, resume
+  net/            push/pull/serve - a plaintext, size-diff TCP sync
+                  protocol
 apps/sfs/         the CLI
-tests/            unit, end-to-end, crash matrix, tamper, concurrency
-bench/            the five graded measurements
-fixtures/         checkpoint generators (Python) — output is never committed
-research/         algorithm experiments that informed the ADRs
+tests/            2 integration tests (byte-identity) + per-module unit
+                  tests
+bench/            residual_codec, verify_time, mmap_throughput, align_time, lap_bench, sparse_bench
+fixtures/         checkpoint generators (written in Python)
 ```
 
 ---
-
-## Contributing
-
-Read [docs/ownership.md](docs/ownership.md) first — it says who to ask about
-what.
-
-- The formats in `docs/spec/` are **frozen**. Changing one needs sign-off from
-  all three teams and a same-commit update to the spec, the golden objects and
-  the tests.
-- `make format-check` and `make test-unit` before pushing. CI runs both.
-- Commit small and often.
-- If you build it, you write its three sentences of documentation the same day,
-  in your own words.
 
 ## License
 

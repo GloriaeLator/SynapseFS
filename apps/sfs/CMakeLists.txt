@@ -1,4 +1,4 @@
-# apps/sfs — the single CLI binary.
+# apps/sfs - the single CLI binary.
 #
 # Every subcommand lives in its own file under cmd/ so that eleven people are
 # not editing one main.cpp. A command that is wired but unimplemented exits 7

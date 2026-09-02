@@ -1,16 +1,11 @@
-# ADR 0005 — Framed residuals; encoding chosen by measurement
-
-- **Status:** Accepted (frame design and encoding)
-- **Date:** 2026-08-29 (frame design), 2026-08-31 (encoding, measured)
+# ADR 0005 - Framed residuals; encoding chosen by measurement
 
 ## Context
 
 Once units are aligned, we store the difference. Two questions: **how** the
 difference is encoded, and **at what granularity** it is stored.
 
-The second question turned out to matter far more than the first.
-
-## Part 1 — Granularity: frames, not layers
+## Part 1 - Granularity: frames, not layers
 
 The prototype stored one compressed blob per layer. Resolving a chain of depth
 5 to serve a single 4 KiB page fault therefore decompressed the whole layer
@@ -34,8 +29,8 @@ artifact header (SPEC 12 §4). Recursion is per frame, so peak memory is
 
 The objection to answer is "we can't chunk both sides at the same offsets,
 because permutation destroys locality". True, and irrelevant: the mapping is
-known exactly, and the natural atomic unit — one output unit, a linear row or a
-conv filter — is contiguous on *both* sides. A target frame covering units
+known exactly, and the natural atomic unit - one output unit, a linear row or a
+conv filter - is contiguous on *both* sides. A target frame covering units
 `[a,b)` needs base units `p[a:b]`, which the reader computes.
 
 Frame size 128 KiB, rounded to whole output units. It is baked into every
@@ -48,23 +43,23 @@ detection survives the reconstruction path at a cost proportional to what was
 read. That property is not asked for by the PS and is our strongest
 original-thinking claim in Module 2.
 
-## Part 2 — Encoding: decided by measurement
+## Part 2 - Encoding: decided by measurement
 
 **Decision: `zigzag(b-a)` + no transform.** Measured on `tiny_mlp` (~58k
 params, fp16; `fixtures/gen_mlp.py` + `fixtures/permute.py`) via a standalone
-dev-box build of `bench/residual_codec.cpp` — not yet the graded machine or
+dev-box build of `bench/residual_codec.cpp` - not yet the graded machine or
 final ISA (scalar kernel only; re-measure once AVX2/AVX512 land and this
 builds under the real CMake release preset, but the encoding choice itself is
 not expected to change with ISA, only its throughput).
 
-On the fine-tune pair — the only one of the three that has real, non-floored
-signal to discriminate on — `zigzag(b-a)` + none had both the best ratio
+On the fine-tune pair - the only one of the three that has real, non-floored
+signal to discriminate on - `zigzag(b-a)` + none had both the best ratio
 (0.8196, tied with byte-plane to four decimals) and the best decompress
 throughput (1291 MB/s, clear best of six). No ratio-vs-throughput trade was
 needed: this candidate simply won both. Full six-number table:
 `docs/tradeoffs.md` §1.4.
 
-This **refutes the intuition below** — byte-plane and bitshuffle measured
+This **refutes the intuition below** - byte-plane and bitshuffle measured
 *worse* on both axes than plain `zigzag`, not better. Recorded as the
 "how we would know we were wrong" section anticipated: the measurement, not
 the intuition, decides. `EncodeOptions`' defaults
@@ -94,7 +89,7 @@ performed on weights anywhere in this system):
 
 **Decision procedure, timeboxed to 90 minutes on Day 2:** measure all six for
 **both** compression ratio and decompression throughput, on a real fine-tune
-pair, and record all six numbers in `docs/tradeoffs.md` — not just the winner.
+pair, and record all six numbers in `docs/tradeoffs.md` - not just the winner.
 
 Ratio is 7% of the grade and mmap throughput is 8%. Choosing on ratio alone is
 choosing the smaller number over the larger one.
@@ -119,9 +114,3 @@ so a later change does not invalidate existing objects.
   high-entropy noise that compresses to larger than the input, so without this
   bound a badly aligned group can make the repository grow faster than storing
   full copies.
-
-## How we would know we were wrong
-
-If the measured residual ratio on a real fine-tune pair is worse than plain
-zstd of the target, alignment is not helping and the problem is upstream in
-ADR 0004 — not here.

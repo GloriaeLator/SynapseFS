@@ -1,14 +1,5 @@
 # ADR 0010 — Virtual interfaces at module seams, templates inside
 
-- **Status:** Accepted
-- **Date:** 2026-08-29
-
-## Context
-
-Eight people, nine modules, four days, and a hot read path. Two forces pull
-apart: the team needs stable seams to work behind in parallel, and
-`read_range` is called on every page fault.
-
 ## Options
 
 1. **Concrete types everywhere.** Fastest, no indirection, and every module
@@ -30,7 +21,7 @@ Option 3, with the boundary drawn explicitly.
 | `IObjectSource` | Lets `checkout`, mount and `verify` share `read_range` while tests inject faults. |
 | `ITensorSource` | Real safetensors file vs synthetic fixture. |
 | `ILapSolver` | Exact JV vs greedy+2-swap, chosen at runtime by size (ADR 0004). |
-| `ITransport` | TCP vs an in-process pipe, so `test_havewant.cpp` needs no sockets. |
+| `ITransport` | TCP vs an in-process pipe. |
 
 The cost of a virtual call at these granularities is unmeasurable next to the
 `pread` or `ZSTD_decompress` it wraps, and the ability to inject a
@@ -47,17 +38,10 @@ possible at all.
   `std::ranges::lower_bound`. It is on the fault path and it has exactly one
   implementation.
 
-**Rule of thumb for the team:** if a call happens once per frame or less often,
-a virtual call is free — use the interface. If it happens once per unit or per
-byte, it must not be virtual.
-
 ## Consequences
 
-- Every interface gets a test double in `tests/common/`, and the fault-injecting
-  store is one of them.
 - Interfaces live in `core` and depend on nothing else, so a module can be
-  compiled and tested against stubs before its collaborators exist. On Day 1
-  that is the difference between eight people working and three people waiting.
+  compiled and tested against stubs before its collaborators exist.
 - We accept some ugliness where a virtual boundary sits close to a hot path
   (`IBlockStore::read_range` returning into a caller-owned `std::span` rather
   than a `std::vector`, to keep allocation out of the fault path).

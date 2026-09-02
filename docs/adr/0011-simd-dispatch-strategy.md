@@ -1,39 +1,23 @@
-# ADR 0011 — Compile every ISA, choose at runtime from CPUID
-
-- **Status:** Accepted
-- **Date:** 2026-08-29
+# ADR 0011 - Compile every ISA, choose at runtime from CPUID
 
 ## Context
 
-The residual kernel — XOR or zigzag-add over a frame, plus the byte-plane or
-bitshuffle inverse — is the innermost loop of every read. It runs on every page
+The residual kernel - XOR or zigzag-add over a frame, plus the byte-plane or
+bitshuffle inverse - is the innermost loop of every read. It runs on every page
 fault, at every level of a delta chain. It is embarrassingly vectorisable.
 
 It also runs on a machine we do not own. Building with `-mavx512f` produces a
-binary that SIGILLs on anything older than Skylake-SP, and "it crashed on the
-evaluator's laptop" is a total loss of Module 3.
-
-## Options
-
-1. **Baseline only (SSE2).** Always runs, leaves a lot on the floor.
-2. **Compile with `-march=native`.** Fastest on the build machine, undefined
-   elsewhere. Unacceptable for a submitted binary.
-3. **GCC function multiversioning** (`__attribute__((target_clones)))`). One
-   source, compiler handles dispatch via IFUNC. Attractive, but the dispatch
-   granularity is per function and the resolver runs at load time; it also
-   interacts badly with sanitizers and with `-fno-plt`.
-4. **Compile each kernel in its own translation unit with its own ISA flags;
-   pick at runtime from CPUID.**
+binary that SIGILLs on anything older than Skylake-SP.
 
 ## Decision
 
-Option 4.
+**Compile each kernel in its own translation unit with its own ISA flags; pick at runtime from CPUID.**
 
-- `modules/codec/src/kernels/residual_scalar.cpp` — no ISA flags, and compiled
+- `modules/codec/src/kernels/residual_scalar.cpp` - no ISA flags, and compiled
   with `-fno-tree-vectorize` so it stays a literal reference implementation.
-- `residual_avx2.cpp` — `-mavx2 -mfma -mbmi -mbmi2`.
-- `residual_avx512.cpp` — `-mavx512f -mavx512bw -mavx512vl -mavx512dq`.
-- `dispatch.cpp` — no ISA flags. Reads CPUID once (`util/cpuid.hpp`), including
+- `residual_avx2.cpp` - `-mavx2 -mfma -mbmi -mbmi2`.
+- `residual_avx512.cpp` - `-mavx512f -mavx512bw -mavx512vl -mavx512dq`.
+- `dispatch.cpp` - no ISA flags. Reads CPUID once (`util/cpuid.hpp`), including
   `xgetbv` to confirm the OS actually saves the wide state, and publishes a
   function pointer.
 

@@ -1,213 +1,133 @@
-# SPEC 14 — Wire protocol
+# SPEC 14 - Wire protocol
 
-**Status:** normative · **Protocol version:** 1
+## 1. What this is, precisely
 
-Two peers synchronising history over TCP, transferring only the blocks the
-receiver does not have.
+A bespoke, unauthenticated, unencrypted, plaintext, line-delimited TCP
+protocol that synchronizes the raw files under `.synapsefs/` by comparing
+**file size** (or, for ref/HEAD files, raw content), not by comparing
+object hashes or walking the commit graph. `synapse_sync.cpp` calls raw BSD
+sockets directly.
 
-The PS is explicit that the transport is a free choice and is **not graded**,
-while content-addressed block diffing **must be implemented by the team** and
-not delegated to `rsync` or `rclone`. This document is therefore deliberately
-plain about the transport and precise about the negotiation.
+There is no protocol version field and no magic bytes. Cryptographic
+verification of transferred bytes based out of how this protocol moves: a received loose object (anything landing under
+`.synapsefs/objects/`) is checked against its own claimed address before
+being committed into place (§4). Refs/HEAD/journal files are still synced
+by raw content/size equality only - see [`threat_model.md`](../threat_model.md).
 
----
+## 2. Public API
 
-## 1. Transport
-
-A single TCP connection, length-prefixed binary frames, one request/response
-exchange at a time per connection. No TLS, no authentication — see
-`docs/threat_model.md` for why that is the right scope here and what it costs.
-
-Default listen address `127.0.0.1:9418`, overridable by `.synapsefs/config`
-(`listen`) and by `sfs serve --listen host:port`. The README documents the
-invocation, which is a listed deliverable.
-
----
-
-## 2. Framing
-
-```
-┌────────────┬──────────┬──────────────────────┐
-│ u32 LE len │ u8  type │ payload (len bytes)  │
-└────────────┴──────────┴──────────────────────┘
+```cpp
+namespace sfs::net {
+    bool push(const std::string& remote_url);   // remote_url = "IP:PORT"
+    bool pull(const std::string& remote_url);   // remote_url = "IP:PORT"
+    void serve(int port);                       // blocking accept() loop, never returns
+}
 ```
 
-`len` counts the payload only. Maximum frame payload is 8 MiB; a peer
-announcing more is a protocol error and the connection is closed. Block
-payloads larger than that are split across `BLOCK_DATA` frames (§4.3).
+`connect_to_remote(url)` splits `url` at the **first** `:` and expects a
+bare `IP:PORT` string. The help text reads `ip:port ...
+NOT a URL, no http:// or other scheme prefix`, and `connect_to_remote()`
+itself defensively strips a leading `"<scheme>://"` if one is present (so a
+copy-pasted `http://ip:port` still works rather than crashing), parses the
+port with a `safe_stoi` helper that returns `std::nullopt` instead of
+throwing on garbage, validates the parsed port is in `(0, 65535]`, and
+checks the `socket()`/`inet_pton()` return values before using them. A
+malformed remote string is now a clean connection failure (`push`/`pull`
+return `false`, see §6), never an uncaught exception.
 
-| type | name | direction |
-|------|------|-----------|
-| 0x01 | `HELLO`       | → |
-| 0x02 | `HELLO_ACK`   | ← |
-| 0x10 | `REF_LIST`    | → / ← |
-| 0x11 | `HAVE`        | → |
-| 0x12 | `WANT`        | ← |
-| 0x20 | `BLOCK_HDR`   | → / ← |
-| 0x21 | `BLOCK_DATA`  | → / ← |
-| 0x22 | `BLOCK_END`   | → / ← |
-| 0x30 | `REF_UPDATE`  | → |
-| 0x7e | `DONE`        | → / ← |
-| 0x7f | `ERROR`       | → / ← |
+## 3. Handshake and framing
 
-All multi-byte integers are little-endian. Object identifiers travel as raw 32
-bytes without the `b3:` prefix.
+Every exchange is plain ASCII, newline-terminated, read one byte at a time
+by a line reader (`read_line()` - functionally correct, not efficient).
+There is no binary frame header anywhere in this protocol.
 
----
+1. Client connects and sends the literal line `PUSH` or `PULL`.
+2. **Inventory exchange** (`send_inventory`/`receive_inventory`): a
+   `<decimal length>\n` line, followed by exactly that many raw bytes of a
+   `nlohmann::json` object mapping local `.synapsefs` file paths to either
+   their byte size, or - for any path containing `/ref` or `HEAD` - their
+   literal file contents (used to detect ref changes by string equality
+   rather than size).
+3. **Request** (receiver -> sender): `REQ\n<filepath>\n<decimal offset>\n`.
+4. **File response** (sender -> receiver): `FILE\n<filepath>\n<decimal
+   total_size>\n<decimal offset>\n` immediately followed by
+   `total_size - offset` raw bytes, streamed in 8192-byte reads/writes.
+5. **Completion**: the receiver sends `DONE\n` after it has processed every
+   inventory entry; the sender's loop exits on reading `DONE` or on
+   disconnect.
 
-## 3. Negotiation
+`push` and `pull` are symmetric roles over this same protocol: `push`
+sends the local inventory and then acts as the file **sender**; `pull`
+receives the remote inventory and acts as the file **receiver**. There is
+no separate negotiation phase distinct from the inventory diff - the whole
+"which objects does the peer need" question is answered by walking every
+file under `.synapsefs/objects`, `.synapsefs/refs`, `.synapsefs/ref`, and
+`.synapsefs/journal` and diffing sizes, once, up front.
 
-The interesting part, and the part that is graded.
+## 4. Resumability - size-based, not content-verified
 
-### 3.1 Naive approaches, and why not
+`handle_receive_file()` writes into `<path>.tmp`, opening in append mode
+when the request carries `offset > 0`. `receiver_sync_loop()` picks that
+offset from the local `.tmp` file's current size (0 if none, or if the
+existing `.tmp` is already larger than the remote's reported size, in which
+case it restarts from 0). A completed transfer deletes any prior file at
+the destination path and renames the `.tmp` file over it.
 
-Dumping every block identifier the sender holds is O(repository), which at 7B
-with a few hundred commits is millions of identifiers to exchange in order to
-transfer one delta. Dumping every identifier the *receiver* holds is the same
-problem mirrored.
+**A hash is now checked, but only for object files.** After a transfer into
+`<path>.tmp` completes (i.e. the accumulated byte count reaches the
+inventory's reported size), `handle_receive_file()` checks whether the
+destination path matches the loose-object fan-out shape
+(`.synapsefs/objects/<2-hex>/<62-hex>`) via `object_oid_from_path()`, which
+reconstructs the expected `core::Oid` directly from the two path components
+(`"b3:" + dirname + filename`) - no filesystem walk, no trust in the
+sender's claims. If it matches, `verify_received_object_payload()` reads the
+whole temp file back, decodes it with `format::ObjectHeader::decode()`,
+bounds-checks `payload_offset() + payload_len` against the actual file size,
+and recomputes `core::compute_oid(hdr->kind, payload)`, comparing it against
+the oid derived from the path. On any mismatch - decode failure,
+out-of-bounds length, or hash mismatch - the `.tmp` file is deleted, a
+message is printed (`"Integrity check FAILED for ... Discarding; this file
+was NOT synced."`), and `handle_receive_file()` returns `false` instead of
+renaming the file into place. `receiver_sync_loop()` propagates that
+failure up through `pull()`'s return value (§6), and `serve()`'s `PUSH`
+branch logs a warning telling the operator to run `sfs verify --full` if any
+file in an incoming push fails this check.
 
-### 3.2 What we do: walk the commit DAG
+The whole-payload BLAKE3 recompute is what proves
+integrity here, not a chunk-by-chunk walk. See
+[`threat_model.md`](../threat_model.md) for what remains unverified.
 
-```
-1. Client sends REF_LIST (its refs) and the server replies with REF_LIST (its refs).
-2. Client sends HAVE: the identifiers of commits it already has, walked
-   backwards from its own refs, in exponentially widening strides
-   (1, 2, 4, 8, … generations back), capped at 256 identifiers per round.
-3. Server intersects. If it finds a common ancestor, it replies WANT with the
-   set of objects reachable from the requested ref but NOT reachable from the
-   common ancestor. If not, the client sends another HAVE round, deeper.
-4. After 8 rounds with no intersection, the client declares no common history
-   and the server sends the full closure.
-```
+## 5. Server
 
-The stride pattern is the same idea git uses, and for the same reason: the
-common case is two peers a handful of commits apart, and that costs one round
-trip with a few identifiers.
+`serve(int port)` is a single-threaded, single-connection-at-a-time
+`socket()`/`bind()`/`listen(fd, 5)`/`accept()` loop on `INADDR_ANY:port`.
+It blocks on one client until that client disconnects before accepting the
+next; there is no concurrency. It dispatches on the first line read
+(`PUSH`-> act as receiver, `PULL` -> act as sender); any other first line is
+silently ignored and the connection closed.
 
-Reachability is computed exactly as in SPEC 11 §6 — commit → manifest +
-topology, manifest → header block and every group's `block`/`diff_block`. The
-**ancestor invariant** (SPEC 10 §4.3) is what makes this correct: because a
-delta's base is guaranteed to be an ancestor of the commit containing it, the
-closure over "commits the receiver lacks" is guaranteed to include every base
-those commits' deltas resolve against. Without the invariant, a receiver could
-accept a manifest whose base block lives on a branch it does not have, pass
-every per-object hash check, and be unreadable.
+The documented default port is now actually applied. `RepoConfig.listen`
+defaults to `"127.0.0.1:9418"`; `apps/sfs/cmd/serve.cpp`'s backing `static
+int port` used to be declared with no initializer and the CLI11 option had
+no `->default_val(...)` call, so running `sfs serve` with no `-p/--port`
+zero-initialized `port` and bound an OS-assigned ephemeral port instead -
+matching neither the `9418` `RepoConfig` documented nor the "By Default
+8002" the old `--help` text itself claimed (a second, independent
+inconsistency). Both are fixed: `port` is now declared `= 9418`, the CLI11
+option carries `->default_val(9418)`, and the stale "By Default 8002" text
+is gone. Running `sfs serve` with no `-p/--port` now binds `9418`, matching
+`RepoConfig::listen`. `-p/--port` still overrides it explicitly when
+needed. Note `net::serve()` itself still takes only a raw `int port` and
+never reads `RepoConfig` - the fix is at the CLI default, not a new
+config-read path - so passing an explicit port that disagrees with
+`RepoConfig.listen` is still possible and still silently accepted.
 
-The sender MUST additionally filter the WANT set against the receiver's
-declared `HAVE` blocks for the objects it names, so that a block shared between
-two branches is not sent twice.
+## 6. CLI-level exit-code caveat
 
----
-
-## 4. Block transfer
-
-### 4.1 `BLOCK_HDR`
-
-```
-oid[32] │ u8 kind │ u64 payload_len │ u32 chunk_count │ chunk_digest[32] × chunk_count
-```
-
-The chunk digests are sent up front, before the data. That is what makes an
-interrupted transfer resumable at chunk granularity rather than block
-granularity, and it lets the receiver reject a block early.
-
-### 4.2 `BLOCK_DATA`
-
-```
-oid[32] │ u64 offset │ bytes
-```
-
-Offsets are into the uncompressed payload and MUST be chunk-aligned except for
-the final chunk.
-
-### 4.3 `BLOCK_END`
-
-```
-oid[32]
-```
-
-On receipt the receiver:
-
-1. verifies every chunk against the digests from `BLOCK_HDR`;
-2. verifies `oid == blake3(frame(kind, payload))` — the full `verify_block`
-   path, not the fast path, because this is untrusted input;
-3. writes the object with `atomic_write` (SPEC 11 §3.1) from
-   `.synapsefs/incoming/` into `objects/`.
-
-A failure at any step discards the block and sends `ERROR`. Nothing partial
-becomes visible.
-
-### 4.4 `REF_UPDATE` (push only)
-
-```
-u8 ref_len │ ref_name │ oid_expected[32] │ oid_new[32]
-```
-
-Sent **after** every object it depends on has been acknowledged. The server
-applies it as a compare-and-swap (SPEC 11 §4) and rejects a non-fast-forward
-unless `--force` was passed, which sets `oid_expected` to zeroes.
-
-Objects before refs, on the wire exactly as on disk. A crash mid-push leaves
-the receiver with unreferenced objects, which are garbage rather than
-corruption.
-
----
-
-## 5. Resumability
-
-The PS requires an interrupted sync to resume without re-transferring and
-without corrupting either side.
-
-**There is no transfer journal, and that is a design decision, not an
-omission.** Content addressing already gives us everything a journal would:
-
-- Objects fully received are in `objects/` and are self-identifying.
-- Objects partially received are in `.synapsefs/incoming/<oid>.part` with their
-  chunk digests from `BLOCK_HDR`. On resume, the receiver verifies the chunks
-  it already holds, discards the first bad one and everything after it, and
-  asks for the remainder from that offset.
-- The want set is **recomputed** on resume from the receiver's current state.
-  Anything that arrived is now a `HAVE` and is not requested again.
-
-The state that a journal would have tracked is derivable from the store, and
-derived state cannot disagree with reality the way recorded state can. The
-prototype had a `resume.py` doing this bookkeeping; deleting it removed a whole
-class of "the journal says we have it but we don't" bugs.
-
-`resume_token` in `modules/net/include/synapsefs/net/resume.hpp` is therefore a
-thin thing: `{session_nonce, ref_name, oid_target}`. It exists so a resumed
-connection can skip re-negotiation when nothing changed, and correctness does
-not depend on it.
-
----
-
-## 6. Errors
-
-```
-ERROR: u16 code │ u8 msg_len │ msg
-```
-
-| Code | Meaning |
-|------|---------|
-| 1 | Protocol version mismatch |
-| 2 | Malformed frame |
-| 3 | Unknown object requested |
-| 4 | Hash mismatch on received block |
-| 5 | Ref update rejected (non-fast-forward) |
-| 6 | Repository locked |
-| 7 | Ancestor invariant violated by received manifest |
-
-Codes map onto `sfs::core::ErrKind` (see `docs/interfaces/errors.md`) so a
-network failure surfaces to the user in the same vocabulary as a local one.
-
----
-
-## 7. Test hooks
-
-| Assertion | Test |
-|---|---|
-| Frame encode/decode round trip, including the 8 MiB boundary | `modules/net/tests/test_framing.cpp` |
-| Have/want finds the common ancestor in one round for near peers | `modules/net/tests/test_havewant.cpp` |
-| A block on both branches is sent once | `modules/net/tests/test_havewant.cpp` |
-| Kill mid-transfer, resume, no re-transfer, both sides verify | `tests/sync_interrupt.cpp` |
-| Received manifest violating the ancestor invariant is rejected | `modules/store/tests/test_dag_walk.cpp` |
+`run_push()`/`run_pull()` (`apps/sfs/cmd/push.cpp`/`pull.cpp`) now check the
+returned `bool` and return `ExitCode::Network` with a stderr message on
+failure. For `pull` specifically, "failure" now includes the §4 integrity
+check rejecting a received object, not just a dropped connection. A failed
+push or pull is now visible at the shell exit-code level for
+connection/transfer failures and (for pull) received-object integrity
+failures.

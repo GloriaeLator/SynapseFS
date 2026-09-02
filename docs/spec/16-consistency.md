@@ -1,165 +1,76 @@
-# SPEC 16 — Consistency and the filesystem contract
+# SPEC 16 - Consistency and the filesystem contract
 
-**Status:** normative
+## 1. One reconstructor
 
-What a reader of the mount is guaranteed, what the daemon may and may not do,
-and how the PS's consistency requirement is satisfied by construction rather
-than by testing.
+`codec::reconstruct::read_range()` is the only function in this codebase
+that turns stored objects back into checkpoint bytes. `sfs checkout
+--output`, the FUSE mount's `read()` callback, and `sfs verify --full`'s
+byte-level re-hash all call it. There is no second, independent
+reconstruction implementation that could silently diverge from it - "byte
+identical" between checkout and mount is a property of the call graph, not
+a coincidence that happens to be tested.
 
----
+## 2. Delta chain resolution
 
-## 1. The requirement
+Recursion down a delta chain (Delta group -> base commit's manifest -> that
+group's own entry, repeated) happens **per residual frame**, not per layer
+of the chain. Peak memory for serving one read is bounded by
+`frame_bytes × chain_depth` - at defaults, 128 KiB × up to 5 = 640 KiB, not
+proportional to the full checkpoint size or to the number of intermediate
+commits' full tensors. `RepoConfig::max_chain_depth` (default 5) is
+enforced both when planning a new commit's storage decision
+(`codec::snapshot_policy::decide`) and when reading
+(`ReadCtx::max_depth`).
 
-> A checkpoint restored via checkout and the same checkpoint read through the
-> mount must be byte-identical.
+Every frame touched during reconstruction has its BLAKE3 digest (of the
+*reconstructed* bytes - see [SPEC 12](12-residual-format.md#4-frames))
+checked before those bytes are returned to the caller. A secondary
+(non-leading-axis) permutation dependency is resolved by looking up the
+owning tensor's own diff artifact within the same commit
+(`resolve_secondary_permutation`); row-gather and column-gather are applied
+in a way that commutes, so evaluation order does not affect correctness.
 
-and
+## 3. Checkout
 
-> Strictly no pre-materialization — tensors are built dynamically in RAM/VRAM
-> as faults arrive; benchmarked from a cold page cache.
+`sfs checkout --output <path>` writes through `stio::StWriter`: bytes are
+appended strictly in order (no scatter-write support - this is a
+concatenation of already-verbatim ranges, never a re-serialization), a
+running SHA-256 is tracked, and `finish()` requires both the total byte
+count to match `manifest.file.total_bytes` **and** (if
+`manifest.file.sha256` is non-empty) the SHA-256 to match, checked *before*
+the temp file is renamed into place. A mismatch on either check deletes the
+temp file and leaves the destination untouched - a failed checkout never
+produces a partially-correct file at the requested path.
 
-These pull in opposite directions if you implement them twice. They do not if
-you implement them once.
+## 4. Mount
 
----
+`mount::SynapseFs` (FUSE3 low-level) serves reads through a bounded LRU
+`FrameCache` keyed by `(artifact oid, tensor index, frame index)`, calling
+`read_range` to fill a cache miss and never pre-materializing or eagerly
+warming the whole file - `daemon.hpp`'s explicit contract: no reconstructed
+file is ever written to disk, and no group is ever fully reconstructed to
+serve a partial read. The mount is unconditionally read-only (`open()`
+rejects any non-`O_RDONLY` flag with `EROFS`); there is no write path in
+the FUSE op table at all.
 
-## 2. One reconstructor
+Sequential-read detection (`PrefetchState`, default: 3 consecutive
+sequential reads trigger warming up to 4 frames ahead) exists purely as a
+latency optimization and never changes correctness - a prefetch failure is
+swallowed silently, never surfaced as a read error.
 
-There is exactly one function that turns a (group, offset, length) request into
-bytes: `read_range` (SPEC 12 §6).
+## 5. What is and is not covered by "byte-for-byte"
 
-```
-sfs checkout        →  for each buffer entry: read_range(...) → write(fd)
-mount, read()       →  interval lookup → read_range(...) → copy to fuse buffer
-mount, mmap fault   →  same path, via the kernel's read of the backing pages
-sfs verify          →  read_range over every reachable object
-```
-
-`checkout` is a loop of about thirty lines. It is not a second reconstructor,
-and a design where it *is* one has already failed the consistency requirement —
-it just does not know it yet.
-
-The consequence worth stating in the presentation: consistency here is not a
-test that passes, it is a property of the call graph. `tests/byte_identity.cpp`
-asserts it anyway, at every fixture scale, because a property you do not assert
-is a property somebody refactors away on Day 4.
-
----
-
-## 3. The mount's view
-
-### 3.1 What is exposed
-
-```
-<mountpoint>/
-  model.safetensors        # manifest.file.name from the mounted commit
-```
-
-Read-only. `open()` with any write flag returns `EROFS`. No directory
-hierarchy, no branches as directories — a mount is of one commit.
-
-`stat()` reports `st_size == manifest.file.total_bytes` and `st_mtime` from the
-commit's timestamp. Getting `st_size` right matters more than it sounds:
-`safetensors` reads the 8-byte header length, then the header, then trusts
-offsets; a wrong size surfaces as a truncated tensor much later.
-
-### 3.2 The interval table
-
-Built once at `open()` from the manifest's buffer layout, never rebuilt:
-
-```
-[0, header_len)                        → header block
-[header_len + off, +nbytes) per entry  → (group, offset within group)
-```
-
-`read(fd, buf, off, len)` is a binary search into that table, then one or more
-`read_range` calls, then a copy. There is no per-read parsing of anything.
-
-### 3.3 Graded syscalls
-
-`open`, `read`, `mmap`, `lseek`, `stat`, `close`. In practice that means:
-
-- FUSE low-level API (`fuse_lowlevel.h`), not the high-level path — we need
-  control over open flags and reply buffers. See
-  `docs/adr/0003-fuse-lowlevel-vs-highlevel.md`.
-- `FOPEN_KEEP_CACHE` **set**: pages the kernel already has stay valid, because
-  a commit is immutable.
-- `FOPEN_DIRECT_IO` **unset**: with direct I/O on, `mmap` does not work. This
-  is the single most common way to fail Module 3 while every `read()` test
-  passes.
-- `max_read` and readahead raised (128 KiB), so `safetensors`' large sequential
-  reads arrive as fewer, larger requests.
-
----
-
-## 4. No pre-materialisation
-
-The daemon MUST NOT, at any point:
-
-- write the reconstructed file anywhere;
-- reconstruct a group in full before serving a partial read of it;
-- populate a cache eagerly at mount time.
-
-Demonstrable: `strace -f -e trace=write,openat sfs mount --foreground` during a
-full `load_file()` shows reads of objects and no creation of a checkpoint-sized
-file. That trace is a presentation slide.
-
-What the daemon *may* hold is a bounded LRU of **decompressed frames**
-(`cache_bytes`, default 1 GiB). A frame is at most `frame_bytes`, so the cache
-is a cache of small things, and peak RSS is bounded by
-`cache_bytes + frame_bytes × max_chain_depth × concurrent_readers` plus the
-interval table.
-
----
-
-## 5. Concurrency
-
-Multiple concurrent readers must be correct — graded.
-
-- **Immutability.** Objects are immutable; a mounted commit is immutable.
-  There is no invalidation problem, only a fill problem.
-- **Single-flight fill.** Two readers faulting the same frame must not both
-  decompress it. A per-frame in-flight map with a condition variable: the first
-  arrival decompresses, the rest wait and then read the published entry.
-- **Publication.** A cache entry becomes visible only after it is fully
-  populated, published with release semantics and read with acquire. A reader
-  never observes a half-filled frame.
-- **Eviction.** An entry with a non-zero reader refcount is never evicted;
-  eviction picks the LRU entry with refcount zero. Under sustained pressure
-  from more concurrent readers than the budget allows, the daemon serves
-  correctly and slowly rather than incorrectly.
-
-`modules/mount/tests/test_blockcache_race.cpp` runs under TSan, and
-`tests/concurrent_readers.cpp` runs 4–8 simultaneous loaders and compares every
-result byte-for-byte against a checkout.
-
----
-
-## 6. Interaction with the rest of the repository
-
-| Event during a mount | Behaviour |
-|---|---|
-| `commit` on the mounted branch | Mount is of a commit, not a branch. Unaffected. |
-| `gc` | Refused while a daemon is attached (SPEC 11 §6). |
-| `pull` adding objects | Harmless; objects are add-only. |
-| Repository write lock held | Mount does not take it and is not blocked. |
-| Underlying object tampered with mid-mount | Next `read_range` touching that chunk fails; the read returns `EIO` and the daemon logs the object and chunk. It does not serve wrong bytes. |
-
-Returning `EIO` rather than plausible-looking bytes is the whole point of
-putting the digest check on the read path.
-
----
-
-## 7. Test hooks
-
-| Assertion | Test |
-|---|---|
-| `safetensors.torch.load_file()` against the mount succeeds | `tests/e2e.py` |
-| Mount bytes == checkout bytes, every fixture scale | `tests/byte_identity.cpp` |
-| Random reads at arbitrary offsets/sizes match | `modules/mount/tests/test_inode_table.cpp` |
-| Edge cases: header/buffer boundary, tensor boundary, 1-byte read, read at EOF, read past EOF | same |
-| `mmap` works (direct I/O unset) | `tests/e2e.py` |
-| Nothing written during mount | `scripts/e2e.sh --with-mount`, under `strace` |
-| 4–8 concurrent loaders all byte-identical | `tests/concurrent_readers.cpp` |
-| No data race under TSan | `modules/mount/tests/test_blockcache_race.cpp` |
-| Peak RSS within budget at fixture scale | `bench/scripts/peak_rss.sh` |
+Reconstruction is exact at the byte level for the safetensors container:
+the verbatim header block plus concatenated (possibly delta-reconstructed)
+tensor-group bytes reproduce the original file exactly, which is why
+`safetensors.torch.load_file()` can open a mounted or checked-out file
+unmodified. This guarantee is anchored by two independent checks: the
+per-frame BLAKE3 digest (integrity of the reconstruction path itself) and,
+on `checkout`, the whole-file SHA-256 witness recorded at commit time
+(integrity of the *original-to-final* claim). **This guarantee applies to
+files reconstructed from objects fetched through `sfs commit`/`checkout`/
+`mount`/`verify` - it does not currently extend to bytes received via `sfs
+push`/`pull`**, whose transfer protocol performs no hash verification of
+its own (see [SPEC 14](14-wire-protocol.md#4-resumability--size-based-not-content-verified)
+and [`threat_model.md`](../threat_model.md)). A pulled repository should be
+verified (`sfs verify --full`) before it is trusted.

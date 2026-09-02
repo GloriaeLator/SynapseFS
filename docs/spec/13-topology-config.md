@@ -1,184 +1,116 @@
-# SPEC 13 — Topology and permutation groups
+# SPEC 13 - Topology and permutation groups
 
-**Status:** normative · **Format version:** 1
+## 1. Two representations
 
-How a checkpoint's architecture is normalised into permutation groups, what the
-stored topology object contains, and the rules a parser must follow.
+There are two related-but-different schemas here, and the doc structure
+matters because they live in different modules:
 
----
+- **`core::Topology`** - the in-memory value type and its structural
+  validator, defined in `modules/core`. No JSON (de)serialization code for
+  it lives in `core` or `format`.
+- **The `config.json` a user supplies to `sfs commit --topology`, and the
+  `Topology` object that gets written to the repo** - both parsed/produced
+  only by `modules/align/src/topology_parser.cpp`. Its wire schema does
+  **not** use the same field names as the in-memory `core::Topology`
+  struct's own member names; see §3.
 
-## 1. What problem this solves
+## 2. Input: `config.json`
 
-A permutation of layer *l*'s output units, matched by the same permutation on
-layer *l+1*'s input units, leaves the network's function unchanged and changes
-100% of the file's bytes. To exploit that we need to know, for every tensor
-axis, **which permutation applies to it**.
+A plain layer-chain description, matching a straightforward
+`nn.Sequential`-style model:
 
-The prototype expressed this with pairwise links (`permute_input_from`,
-`permute_dim`, `permutable`, `permute_source`). Two things broke it:
-
-**Pairwise links cannot express a shared group.** A ResNet block adds a skip
-connection onto the main path, so the block's output channels, the shortcut's
-output channels and everything downstream must all carry the *same*
-permutation. That is a set, not a chain of pairs.
-
-**Pairwise links carry no blocking factor.** After the last pool, a
-`conv2d_4` with 16 output channels feeds a `linear_9` whose input axis is 1024
-(16 channels × 8 × 8). Applying a 16-element permutation to a 1024-wide axis is
-legal numpy: `W[:, p]` silently returns a `(10, 16)` array. No exception, no
-warning, a model that computes garbage — measured output error 113.667 against
-4.96e-05 for the correct expansion.
-
-The fix is one group id per tensor axis plus a blocking factor. It is the
-output of a union-find over parameter axes, which the parser has to build
-anyway.
-
----
-
-## 2. The topology object
-
-Stored as an object of kind `topology` (SPEC 10 §1.3) and referenced by every
-commit, so a **pulled** repository can decode itself without the producer's
-`config.json`.
-
-```jsonc
+```json
 {
-  "type": "synapsefs.topology",
+  "arch": "example-mlp",
+  "layers": [
+    { "type": "linear", "weight": "0.weight", "bias": "0.bias", "in": 8, "out": 16 },
+    { "type": "relu" },
+    { "type": "linear", "weight": "2.weight", "bias": "2.bias", "in": 16, "out": 10 }
+  ]
+}
+```
+
+Recognized `layers[].type` values (`topology_parser.cpp`): `linear`,
+`conv2d`, `batchnorm2d`, `layernorm`, `relu`, `maxpool2d`, `flatten`,
+`dropout`, `avgpool2d`, `adaptiveavgpool2d`. In strict mode (the default),
+any other type is a hard parse error. A layer entry supplies the tensor
+names it owns (`weight`/`bias`/etc.) plus enough shape information for the
+parser to bind axes.
+
+`config.json` is optional. If none is supplied and none is auto-discovered
+next to the checkpoint file, `sfs commit` stores a literal `"{}"` as the
+topology object and every tensor becomes its own pinned singleton group
+(no alignment is attempted). If a file *is* found but fails to parse, that
+is a hard commit failure - absence is tolerated, corruption is not.
+
+There is no structural inference of groups from tensor names or shapes
+alone; the parser only acts on what `config.json` states explicitly.
+
+## 3. Output: the stored `Topology` object
+
+The `Topology` object written to the repo (`ObjectKind::Topology`) has this
+JSON shape (confirmed against `tests/golden/topology_cnn.json`):
+
+```json
+{
   "format_version": 1,
-  "source": {"kind": "hf_config", "arch": "resnet", "digest": "b3:5b6a…"},
+  "source": { "kind": "hf_config", "arch": "...", "digest": "b3:..." },
   "perm_groups": {
-    "in":  {"size": 3,  "pinned": true},
-    "g0":  {"size": 8,  "pinned": false},
-    "g4":  {"size": 16, "pinned": false},
-    "out": {"size": 10, "pinned": true},
-    "s1":  {"size": 1,  "pinned": true}
+    "<group name>": { "size": N, "pinned": true|false }
   },
   "tensors": {
-    "0.weight": {"axes": [{"dim": 0, "group": "g0",  "block": 1},
-                          {"dim": 1, "group": "in",  "block": 1}]},
-    "0.bias":   {"axes": [{"dim": 0, "group": "g0",  "block": 1}]},
-    "1.weight": {"axes": [{"dim": 0, "group": "g0",  "block": 1}]},
-    "1.num_batches_tracked": {"axes": [{"dim": 0, "group": "s1", "block": 1}]},
-    "9.weight": {"axes": [{"dim": 0, "group": "out", "block": 1},
-                          {"dim": 1, "group": "g4",  "block": 64}]}
+    "<tensor name>": { "axes": [ { "dim": N, "group": "<group name>", "block": N } ] }
   }
 }
 ```
 
-### 2.1 `perm_groups`
+Note the JSON key is **`perm_groups`**, not `groups` - the in-memory
+`core::Topology::groups` field is renamed at this JSON boundary. There is
+no `core`/`format` code that reads or writes this shape directly; only
+`topology_parser.cpp` does.
 
-| Field    | Type    | Req | Notes |
-|----------|---------|-----|-------|
-| `size`   | integer | ✔   | Number of units in the group. Every axis referencing it must have length `size × block`. |
-| `pinned` | boolean | ✔   | `true` means the identity permutation is the only legal one. |
+## 4. How groups and axis bindings are built
 
-Pinned groups are the ones where unit identity carries external meaning: the
-input channels (a network's first layer sees RGB in a fixed order) and the
-classifier output (class 3 means the same class in both checkpoints). Permuting
-either produces a file that reconstructs correctly and a model that is wrong,
-and no byte-level test would catch it. Pinning is a semantic assertion, so it
-is explicit in the object and not inferred.
+For each parameterized layer the parser encounters, it unions axis handles
+in a weighted union-find (`align::AxisUnionFind`, path halving + union by
+rank):
 
-### 2.2 `tensors`
+- a layer's input axis is unioned with the *previous* layer's output axis
+  (sequential dependency),
+- a bias vector is unioned with its own layer's output axis,
+- BatchNorm/LayerNorm affine parameters are unioned with the preceding
+  layer's output axis,
+- the very first layer's input axis and the last parameterized layer's
+  output axis are **pinned** (only the identity permutation is legal),
+- any axis not touched by the config gets a fresh pinned singleton group,
+  so unmodelled tensors (e.g. `num_batches_tracked`) still round-trip
+  through the identical reconstruction path.
 
-One entry per tensor **that the topology models**. `axes` lists only the axes
-that carry a permutation; unlisted axes are untouched.
+`finalize()` sets a group's `size` to the minimum axis length among its
+members, and each member axis's `block` factor to `axis_length / size`. A
+non-integer result is a hard `BlockFactorMismatch` - never silently
+truncated or rounded.
 
-| Field   | Type    | Req | Notes |
-|---------|---------|-----|-------|
-| `dim`   | integer | ✔   | Axis index into the tensor's shape. |
-| `group` | string  | ✔   | Key into `perm_groups`. |
-| `block` | integer | ✔   | Blocking factor, ≥ 1. `shape[dim] == perm_groups[group].size × block`. |
+## 5. `AxisBinding.block` and blocked permutations
 
-Applying a group permutation to an axis is then one function, for every case:
+`AxisBinding { dim, group, block }` requires `shape[dim] == group.size *
+block`. `core::expand_permutation(perm, block)` expands a group-level
+(unit-level) permutation into an element-level one: for each output
+position `p` in the permutation, it emits `block` consecutive output
+indices `p*block .. p*block+block-1`. Every structural case the aligner
+handles - residual-block sharing, a flatten before a linear layer, grouped
+convolution, a pinned classifier head - reduces to this one function; there
+is no separate code path per case.
 
-```cpp
-// A group permutation over an axis whose entries are `block`-sized runs.
-std::vector<uint32_t> expand(std::span<const uint32_t> perm, uint32_t block) {
-    if (block == 1) return {perm.begin(), perm.end()};
-    std::vector<uint32_t> out(perm.size() * block);
-    for (size_t i = 0; i < perm.size(); ++i)
-        for (uint32_t k = 0; k < block; ++k)
-            out[i * block + k] = perm[i] * block + k;
-    return out;
-}
-```
+## 6. Validation
 
-Everything falls out of that:
-
-| Structure | Expression |
-|---|---|
-| Residual add | Both branches get the **same group id**. |
-| Flatten into a linear layer | `block = axis_len / group_size`, **derived**, never hardcoded. |
-| Grouped / depthwise conv | Smaller groups, same mechanism. |
-| Classifier, input stem | `pinned: true`. |
-| BatchNorm following a conv | Same group as the conv's output, `block = 1`. |
-| A tensor nothing models | Its own singleton group, `size = 1`, `pinned: true`, identity. |
-
----
-
-## 3. Coverage rule
-
-**Every tensor present in the checkpoint MUST appear in the manifest's buffer
-layout (SPEC 10 §4.2), whether or not the topology models it.**
-
-The topology and the buffer layout are different things and it is worth being
-explicit about why. The topology says what may be permuted. The buffer layout
-says what bytes exist. On the CNN fixture, 16 tensors are in the checkpoint and
-14 are in the topology; the two missing ones are
-`1.num_batches_tracked` and `5.num_batches_tracked`. A design where the
-manifest is derived from the topology loses them silently, and the loss is
-invisible to any test that only asks whether the model still loads.
-
-Unmodelled tensors are assigned a singleton pinned group by the parser so they
-round-trip through the identical code path as everything else. No special case
-in the reconstructor.
-
----
-
-## 4. Parser requirements
-
-The parser takes a checkpoint plus its `config.json` and produces a topology
-object. It is our own code; the PS explicitly expects teams to write one
-against "this general shape" rather than depend on a library.
-
-1. **Read the safetensors header first.** The set of tensors and their shapes
-   come from the file, not from the config. The config supplies structure.
-2. **Union-find over axes.** Create a set per (tensor, axis). Union an axis with
-   another whenever the architecture forces them to share a permutation:
-   consecutive layers, norm parameters with their preceding conv/linear, both
-   branches of a residual add, and a flatten's grouped input axis with the
-   producing conv's output axis.
-3. **Derive blocking factors**, never hardcode them. For an axis of length `L`
-   joined to a group of size `S`: `block = L / S`, and `L % S != 0` is a parse
-   error naming both tensors.
-4. **Pin** the first layer's input axis and the final classifier's output axis.
-5. **Assign singleton groups** to every tensor in the file not otherwise
-   covered.
-6. **Validate**: every axis reference resolves; every group is non-empty; for
-   every listed axis `shape[dim] == size × block`; no tensor is listed twice.
-7. Emit canonical JSON (SPEC 10 §1.4) and store it.
-
-The parser MUST fail loudly on anything it cannot model. Silently omitting a
-tensor from the topology is safe (it becomes a singleton); silently guessing a
-group is not.
-
-### 4.1 Scope
-
-MLPs and CNNs of ResNet shape — conv, batch/layer norm, linear, residual adds,
-pooling. Transformers are explicitly out of scope in the PS and are not in the
-graded fixtures; attention head permutations and RoPE interleaving would need
-their own group semantics and we do not claim them. See
-`docs/tradeoffs.md`.
-
----
-
-## 5. Test hooks
-
-| Assertion | Test |
-|---|---|
-| Both sample configs parse | `modules/align/tests/test_topology_parser.cpp` |
-| `linear_9` comes out as `{"dim": 1, "group": "g4", "block": 64}` | same |
-| Every tensor in the fixture appears in the buffer layout | `modules/format/tests/test_st_roundtrip.cpp` |
-| A mismatched `size × block` is a parse error, not a wrong answer | `modules/align/tests/test_topology_parser.cpp` |
-| Golden topology still parses | `tests/golden/topology_cnn.json` |
+`Topology::validate(shapes)` checks: every group non-empty; every tensor
+the topology references exists in the given `shapes` map
+(`ErrKind::TopologyIncomplete` otherwise); every axis `dim` is in range and
+names a group that exists (`ErrKind::TopologyParse` otherwise); and
+`shape[dim] == group.size * block` exactly for every binding
+(`ErrKind::BlockFactorMismatch` otherwise). `core::is_valid_permutation`
+(a `[0,n)` bijection check) must be applied to any permutation parsed from
+an untrusted diff artifact before it is used to index anything - this is a
+memory-safety boundary, not just a correctness check, and is enforced in
+`format::read_permutation` (see [SPEC 12](12-residual-format.md#3-permutation-encoding)).

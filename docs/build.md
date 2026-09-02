@@ -21,12 +21,12 @@ docker build -t synapsefs . && docker run --rm synapsefs --version
 | Python | 3.11 | `sudo apt install python3 python3-venv` |
 | vcpkg | any recent | see below |
 
-`libfuse3` comes from the system deliberately — it is tied to the kernel's FUSE
+`libfuse3` comes from the system deliberately - it is tied to the kernel's FUSE
 ABI and to the installed `fusermount3`. See
 [ADR 0009](adr/0009-vcpkg-vs-fetchcontent.md).
 
 Everything else (zstd, nlohmann_json, CLI11, Catch2) comes from vcpkg, pinned by
-`vcpkg.json`. BLAKE3 is vendored — see `third_party/README.md`.
+`vcpkg.json`. BLAKE3 is vendored - see `third_party/README.md`.
 
 ## vcpkg
 
@@ -58,7 +58,7 @@ Or just `make`, which does the same thing.
 | `debug` | `-O0 -g`, assertions. |
 | `release` | **The only configuration published benchmark numbers may come from.** LTO on. |
 | `asan` | Address + UB sanitizers. |
-| `tsan` | Thread sanitizer — run the mount with `--foreground`. |
+| `tsan` | Thread sanitizer - run the mount with `--foreground`. |
 | `no-simd` | Scalar residual kernels only. The correctness oracle for `test_kernel_equivalence`. |
 
 ```bash
@@ -79,7 +79,7 @@ cmake --preset release && cmake --build --preset release -j"$(nproc)"
 
 ## Fixtures
 
-Checkpoints are **generated, never committed** — a listed deliverable, and CI
+Checkpoints are **generated, never committed** - a listed deliverable, and CI
 fails if a `.safetensors` appears in git.
 
 ```bash
@@ -102,21 +102,21 @@ the venv it uses.
 
 ## Common failures
 
-**`Could NOT find FUSE3`** — install `libfuse3-dev`, or configure with
+**`Could NOT find FUSE3`** - install `libfuse3-dev`, or configure with
 `-DSFS_BUILD_MOUNT=OFF` if you are not working on the mount.
 
-**`fusermount3: option allow_other only allowed if 'user_allow_other' is set`** —
+**`fusermount3: option allow_other only allowed if 'user_allow_other' is set`** -
 either drop `--allow-other` or uncomment that line in `/etc/fuse.conf`.
 
-**`Transport endpoint is not connected`** at a mountpoint — a daemon died.
+**`Transport endpoint is not connected`** at a mountpoint - a daemon died.
 `fusermount3 -u <mountpoint>` and check the log.
 
-**vcpkg baseline errors** — `builtin-baseline` in `vcpkg.json` must be a real
+**vcpkg baseline errors** - `builtin-baseline` in `vcpkg.json` must be a real
 vcpkg commit sha. It ships as a placeholder in the scaffold and is meant to fail
 loudly until someone sets it.
 
-**`mmap` returns zeros through the mount** — `FOPEN_DIRECT_IO` is set. It must
+**`mmap` returns zeros through the mount** - `FOPEN_DIRECT_IO` is set. It must
 not be. See [SPEC 16 §3.3](spec/16-consistency.md).
 
-**Compiler too old** — `g++ --version` must be 14+. `g++-13` does not have
+**Compiler too old** - `g++ --version` must be 14+. `g++-13` does not have
 `std::expected` in a form we rely on.

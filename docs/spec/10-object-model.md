@@ -1,13 +1,7 @@
-# SPEC 10 — Object model
-
-**Status:** normative · **Format version:** 1 · **Frozen:** Day 1 of the build plan
-
-The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted
-as in RFC 2119.
+# SPEC 10 - Object model
 
 This document defines the five object kinds SynapseFS stores, how they are
-framed and addressed, and the invariants a repository must satisfy. It is the
-contract between the three teams; `docs/spec/11-repo-layout.md` says where the
+framed and addressed, and the invariants a repository must satisfy. `docs/spec/11-repo-layout.md` says where the
 objects live on disk and `docs/spec/12-residual-format.md` defines the binary
 payload of a diff artifact.
 
@@ -58,7 +52,7 @@ oid(kind, payload)   = "b3:" || hex(BLAKE3_256(frame(kind, payload)))
 | `manifest` | UTF-8 canonical JSON (§4)                                    |
 | `commit`   | UTF-8 canonical JSON (§3)                                    |
 | `topology` | UTF-8 canonical JSON (SPEC 13)                               |
-| `tree`     | UTF-8 canonical JSON (§6a) — format version 2 only           |
+| `tree`     | UTF-8 canonical JSON (§6a) - format version 2 only           |
 
 The kind is inside the hashed bytes. This is not decoration: without it, the
 same byte string read as a tensor group and as a diff artifact would have the
@@ -82,7 +76,7 @@ canonically, because the serialisation *is* the address:
    are not exactly representable as an IEEE-754 double MUST NOT appear; sizes
    and offsets are within 2^53 for every fixture size in scope.
 5. Floating-point values (`cost_raw`, `cost_normalized`) are serialised with
-   `%.17g` and are **advisory only** — see §4.4.
+   `%.17g` and are **advisory only** - see §4.4.
 6. No duplicate keys.
 
 A conforming reader MUST reject an object whose re-serialisation does not
@@ -147,12 +141,12 @@ Everything reachable from a ref is live. Everything else is garbage
 | `manifest`       | oid       | ✔   | Kind `manifest`. |
 | `topology`       | oid       | ✔   | Kind `topology`. Present so that a **pulled** repository can decode itself without the producer's config file. |
 | `timestamp`      | string    | ✔   | RFC 3339, UTC, second precision, always `Z`. |
-| `author`         | string    | ✔   | Free text. Not authenticated — see `docs/threat_model.md`. |
+| `author`         | string    | ✔   | Free text. Not authenticated - see `docs/threat_model.md`. |
 | `message`        | string    | ✔   | Free text, may be empty. |
 
-**Deliberately absent.** `parent` (singular) — it disagreed with `parents` in
-the prototype. `branch` — refs own branch membership, and a commit can be on
-many branches. `commit_hash` — it is the storage key, and a self-referential
+**Deliberately absent.** `parent` (singular) - it disagreed with `parents` in
+the prototype. `branch` - refs own branch membership, and a commit can be on
+many branches. `commit_hash` - it is the storage key, and a self-referential
 field cannot be verified.
 
 ---
@@ -192,7 +186,7 @@ The manifest is the object that makes byte-exactness achievable. It describes
 | `name`         | string  | ✔   | The name the file takes at checkout and in the mount. No path separators. |
 | `header_block` | oid     | ✔   | Kind `header`. The **verbatim** `[8-byte LE length][JSON header]` prefix, including any trailing padding spaces the producer wrote. |
 | `total_bytes`  | integer | ✔   | Size of the reconstructed file. MUST equal `len(header) + Σ buffer[i].nbytes`. |
-| `sha256`       | string  | ✔   | SHA-256 of the whole reconstructed file, 64 lowercase hex. This is what reconstruction must produce, and the one place SHA-256 appears — it is a *witness for humans and for the PS*, not an address. |
+| `sha256`       | string  | ✔   | SHA-256 of the whole reconstructed file, 64 lowercase hex. This is what reconstruction must produce, and the one place SHA-256 appears - it is a *witness for humans and for the PS*, not an address. |
 
 Storing the header verbatim rather than regenerating it is the single most
 important decision in this spec. `safetensors` writes keys in an order that is
@@ -208,7 +202,7 @@ checkpoint.
 ### 4.2 `buffer`
 
 An ordered array covering the file's data section **exactly**, with no gaps and
-no overlaps, in **buffer order** — which is not key order and not topology
+no overlaps, in **buffer order** - which is not key order and not topology
 order.
 
 | Field    | Type    | Req | Notes |
@@ -246,7 +240,7 @@ A map from group id to how that group's bytes are stored.
 |---------------|---------|-----|------------|-------|
 | `mode`        | string  | ✔   | both       | `"full"` or `"delta"`. |
 | `block`       | oid     | ✔   | `full`     | Kind `raw`. The group's bytes, possibly compressed per SPEC 11 §3. |
-| `base`        | object  | ✔   | `delta`    | `{"commit": oid, "group": string}` — where to resolve the base from. |
+| `base`        | object  | ✔   | `delta`    | `{"commit": oid, "group": string}` - where to resolve the base from. |
 | `diff_block`  | oid     | ✔   | `delta`    | Kind `diff`. |
 | `chain_depth` | integer | ✔   | both       | `0` for `full`; `base.chain_depth + 1` for `delta`. Stored, not computed, so the policy check is O(1). |
 
@@ -305,7 +299,7 @@ header is described here and the payload in SPEC 12.
 | `format_version` | ✔   | `1`. |
 | `group`          | ✔   | The permutation group this artifact reconstructs. |
 | `codec`          | ✔   | `"zstd"` or `"none"`. Per-frame, uniform within an artifact. |
-| `permutation`    | ✔   | `{"kind": "identity"}` — zero payload bytes, the common case for a fine-tune — or `{"kind": "explicit", n, dtype, off, len}` locating the permutation array in the payload. |
+| `permutation`    | ✔   | `{"kind": "identity"}` - zero payload bytes, the common case for a fine-tune - or `{"kind": "explicit", n, dtype, off, len}` locating the permutation array in the payload. |
 | `tensors`        | ✔   | One entry per tensor in the group, with its frame index. See SPEC 12. |
 | `alignable`      | ✔   | `false` means the aligner found no meaningful correspondence; the containing manifest entry MUST then be `mode: "full"`. |
 | `alignment`      | ✔   | Advisory provenance: method, raw and normalised cost. Reconstruction MUST NOT depend on these values. |
@@ -317,7 +311,7 @@ the artifact, which is where history belongs.
 
 The permutation lives in the binary payload, not in JSON. A JSON integer array
 for an 8192-unit layer is ~40 KB of parsing on every hop of a chain, and the
-identity case — which is most fine-tunes — costs zero bytes.
+identity case - which is most fine-tunes - costs zero bytes.
 
 ---
 
@@ -330,7 +324,7 @@ self-describing.
 
 ---
 
-## 6a. Tree — sharded checkpoints (format version 2)
+## 6a. Tree - sharded checkpoints (format version 2)
 
 A format-version-1 commit names exactly one file, so `commit.manifest`
 addresses a `manifest` directly and there is no tree object. A sharded
@@ -356,8 +350,8 @@ A `tree` is UTF-8 canonical JSON:
   time (§1.3); a tree entry pointing at a non-manifest is
   `ErrKind::ObjectKindMismatch`.
 
-Everything below a manifest — header, buffer layout, groups, diffs, raw blocks
-— is unchanged by sharding. A tree adds a level to the graph and changes
+Everything below a manifest - header, buffer layout, groups, diffs, raw blocks
+- is unchanged by sharding. A tree adds a level to the graph and changes
 nothing else about it.
 
 Implemented in `modules/format/{include/synapsefs/format/tree.hpp,src/tree.cpp}`.

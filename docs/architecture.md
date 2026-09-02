@@ -221,8 +221,6 @@ kernel-visible hang, not a stack trace, and the mount is 25% of the grade.
   point of a fixture is that it was produced by *someone else's* writer.
 - `tests/e2e.py` — the PS requires `safetensors.torch.load_file()` to work
   unmodified against our mount. Only Python can assert that.
-- `research/` — the LAP benchmark and cost ablation that produced the numbers
-  in the ADRs.
 - `bench/scripts/` — cold-cache orchestration (`drop_caches`), `VmHWM`
   sampling, ratio reporting.
 

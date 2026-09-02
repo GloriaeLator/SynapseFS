@@ -1,158 +1,144 @@
-# SPEC 15 — CLI contract
+# SPEC 15 - CLI contract
 
-**Status:** normative
+## 1. Exit codes
 
-`sfs` is the single binary. Twelve subcommands, stable flags, machine-readable
-output where it helps, and exit codes that mean something.
-
-This is a contract because three teams implement against it and because the
-evaluator types these commands. A command that does the right thing with a
-different flag name still fails the demo.
-
----
-
-## 1. Invocation
-
+```cpp
+enum ExitCode : int {
+    Ok             = 0,
+    Failure        = 1,   // generic
+    Usage          = 2,   // CLI11 argument-parsing errors
+    NotARepository = 3,
+    Integrity      = 4,   // hash mismatch, tamper detection, violated invariant
+    Conflict       = 5,   // merge needs a resolution
+    Locked         = 6,   // repo lock held, or a mount is attached during gc
+    NotImplemented = 7,
+    Network        = 8,   // declared, never returned by any command today
+};
 ```
-sfs [--repo <path>] [-v|--verbose]... [-q|--quiet] [--json] [--no-color] <command> [args]
-```
 
-| Global flag | Meaning |
-|---|---|
-| `--repo <path>` | Repository root. Default: search upward from `$PWD` for `.synapsefs/`. |
-| `-v`, `--verbose` | Repeatable. Once = info, twice = debug, three times = trace. |
-| `-q`, `--quiet` | Errors only. |
-| `--json` | Machine-readable output on stdout. Human text goes to stderr. |
-| `--no-color` | Also implied when stdout is not a TTY, and by `NO_COLOR`. |
-| `--version` | `sfs 0.1.0 (<git sha>, blake3 <ver>, zstd <ver>, fuse <ver>)` and exit 0. |
+`exit_code_for(const core::Error&)` maps a propagated `core::Error` to one
+of these via `Error::exit_code()`. Both codes are reachable, though the
+first is easy to misread as dead:
 
-`sfs --help` MUST list every command. Progress goes to **stderr**, so that
-`sfs log --json | jq` works.
+- `NotImplemented` (7) - no `apps/sfs/cmd/*.cpp` file writes the literal
+  `ExitCode::NotImplemented`/`7`, which reads like the `apps/sfs/CMakeLists.txt`
+  comment's promise ("a command that is wired but unimplemented exits 7") is
+  unmet. `Error::exit_code()` maps `ErrKind::NotImplemented` to `7` (`modules/core/src/error.cpp`)
+- `Network` (8)  - `run_push`/`run_pull`
+  (`apps/sfs/cmd/push.cpp`/`pull.cpp`) now return `ExitCode::Network` for `net::push`/`net::pull` on failure (see §9).
 
----
+## 2. `sfs init [<directory>]`
 
-## 2. Commands
+Creates `.synapsefs/{objects,tmp,refs/heads,journal}`, writes a default
+`RepoConfig`, sets `HEAD` to `ref: refs/heads/main`. Fails (`Failure`) if
+`.synapsefs` already exists at the target.
 
-### `sfs init [<path>]`
-Creates `.synapsefs/` with `format`, an empty `objects/`, `refs/heads/`, and
-`HEAD` pointing at `refs/heads/main`. Idempotent-ish: refuses a non-empty
-`.synapsefs/` rather than merging into it.
+## 3. `sfs commit <file.safetensors> -m <message> [--author <name>] [--topology <config.json>]`
 
-### `sfs commit <checkpoint.safetensors> -m <msg> [--config <config.json>] [--author <a>] [--no-delta]`
-Parses the checkpoint, builds or reuses a topology, aligns each group against
-the parent commit, writes objects, writes the manifest and commit, moves the
-current branch. `--no-delta` forces every group to `mode: full` — the escape
-hatch when alignment is suspected and the thing you want is a correct commit.
+`--author` defaults to `$USER`. `--topology` defaults to `<file's
+directory>/config.json` if that path exists, else no topology is used. See
+[`architecture.md`](../architecture.md#sfs-commit) for the full pipeline,
+including the silent fallback to full-tensor storage on any alignment
+failure. Fails `NotARepository` if not in a repo, `Failure` if HEAD is
+detached ("create a branch before committing") or the file doesn't exist.
 
-Prints the new commit identifier. With `--json`, `{"commit": "b3:…", "bytes_written": N, "groups": {"full": n, "delta": m}}`.
+## 4. `sfs checkout <revision> [-o/--output <path>]`
 
-### `sfs checkout <ref|oid> [--out <path>] [-b <branch>]`
-Two jobs, as in pre-2.23 git and as the PS specifies:
+`<revision>` is a branch name, a full or abbreviated oid, or a
+`refs/heads/<name>` path. If it names an existing branch, HEAD becomes
+symbolic to that branch (a pure switch - pre-2.23 git semantics, no
+"detected as branch" ambiguity). Otherwise HEAD becomes detached at the
+resolved oid. With no `--output`, nothing is materialized - only the HEAD
+move happens, and the command prints "Switched to branch '<name>'" or "HEAD
+is now at `<abbrev>`". With `--output <path>`, streams
+`codec::reconstruct_file()` into that path via `stio::StWriter`
+(atomic-rename-on-success, refuses to leave a partial/mismatched file - see
+[`storage_format.md`](../storage_format.md)).
 
-- `checkout <branch-name>` switches the current branch;
-- `checkout <ref> --out <path>` materialises the checkpoint file.
+## 5. `sfs branch [<name>] [<start-point>] [-d/--delete <name>] [-f/--force]`
 
-`-b <branch>` creates the branch and switches to it. Reconstruction is a loop
-over `read_range` (SPEC 12 §6) — the same primitive the mount uses.
+No `<name>` -> lists every branch, current one marked `* `. `<name>` with no
+`<start-point>` -> creates at the current HEAD tip (`Failure` if HEAD has no
+commits yet). `-d` requires `<name>` (`Usage` otherwise) and deletes via
+`refs.delete_branch`. **`branch` never switches the current branch** -
+that is `checkout <branch>`, matching pre-2.23 git semantics, and is
+explicit in the source's own header comment.
 
-### `sfs branch [<name>] [--list] [-d <name>]`
-Creates or lists. **Does not switch** — that is `checkout`. `-d` deletes a ref;
-refuses if the branch is not reachable from another ref unless `--force`.
+## 6. `sfs log [<revision>] [-n/--max-count <N>]`
 
-### `sfs log [<ref>] [--graph] [--max-count N] [--json]`
-Walks `parents` from the given ref (default `HEAD`).
+Defaults to HEAD, `-n -1` (unlimited). Walks commit ancestry
+(`store::walk_commits`), printing `commit <oid>`, `Merge: <parents...>` for
+merge commits, `Author:`, `Date:`, then the message. If HEAD has no
+commits, prints "fatal: your current branch has no commits yet" - this
+specific message is used both as a genuine `Failure` (when resolving HEAD's
+tip fails) and, separately, as a plain informational print that still exits
+`Ok` (when a valid but empty history is walked) - check the exit code, not
+just the message, if scripting against this.
 
-### `sfs verify [<ref>] [--full] [--repair]`
-**Must work standalone**, with no checkout and no mount. This is explicit in
-the PS and it is a graded metric.
+## 7. `sfs verify [<revision>] [--full] [--repair]`
 
-- default: walk the DAG from every ref, check every object's identifier, check
-  the ancestor invariant, check chunk digests for objects it reads;
-- `--full`: additionally re-verify every chunk of every reachable object;
-- `--repair`: replay or roll back a journal record left by a crash (SPEC 11
-  §3.3), then re-verify.
+Standalone - does not require checkout or mount. No `<revision>` -> checks
+every branch head. `--repair` runs journal recovery first
+(`Journal::recover`), *then* verification. Default mode checks object
+existence, ancestor invariants, and chain-depth consistency; `--full`
+additionally re-hashes every chunk of every referenced object. Prints
+`commits walked:` / `objects checked:`, then either `verify: OK` (exit
+`Ok`) or one `INTEGRITY: <kind> <oid> [group=][chunk=]: <detail>` line per
+finding followed by `verify: FAILED (<N> finding(s))` (exit **`Integrity`
+= 4**). Findings always name the failing object's oid. The `chunk=` field
+is populated for a `--full` chunk-payload mismatch (`ErrKind::HashMismatch`
+on the whole-object check): `store::verify()` re-derives the exact failing
+chunk index by re-walking the object through `IBlockStore::read_range()`
+(which verifies chunk-by-chunk internally) and reading the index back out
+of that call's own `ChunkDigestMismatch` error, without needing a new
+`IBlockStore` method. It's left unset for a non-chunk-shaped failure (a
+missing object, a malformed container) where no single chunk is
+responsible.
 
-Output names the failing object *and* the failing chunk. Exit code 4 on
-detected corruption — distinct from exit 1, so a script can tell "corrupt" from
-"failed to run".
+## 8. `sfs merge <branch> [--ours | --theirs] [-m <message>]`
 
-### `sfs merge <branch> [--ours|--theirs] [-m <msg>]`
-Fast-forward when one tip is an ancestor of the other. Otherwise three-way per
-tensor group against the merge base: changed on one side takes that side;
-changed on **both** sides is a conflict and `merge` **refuses**, listing the
-conflicting groups, until `--ours` or `--theirs` picks a side wholesale.
+`--ours` and `--theirs` together is `Usage` (2). Requires a non-detached
+HEAD. A fast-forward prints "Already up to date." (if merging into self)
+or just moves the ref with no new commit. A true three-way merge with
+unresolved conflicts (default strategy, no `--ours`/`--theirs`) prints each
+conflicting group's `ours=`/`theirs=` block ids, writes nothing, and exits
+**`Conflict` = 5**. A clean or auto-resolved merge writes a two-parent
+commit and prints "Merge made by three-way strategy." then
+`[<ref> <abbrev>] <message>`. See [`storage_format.md`](../storage_format.md#merge)
+for the resolution rules - this is a real per-tensor-group merge.
 
-Averaging conflicting weights would be a defensible research idea and an
-indefensible version-control one: a VCS that silently produces an artifact
-neither author wrote is broken. `docs/tradeoffs.md` argues this at length
-because it is the kind of thing the Q&A asks about.
+## 9. `sfs push <remote_url>` / `sfs pull <remote_url>`
 
-### `sfs push <remote-url> [<branch>] [--force]` · `sfs pull <remote-url> [<branch>]`
-SPEC 14. `push` sends objects then a compare-and-swap ref update. `pull`
-fetches and fast-forwards, refusing a divergent history and telling the user to
-`merge`.
+`<remote_url>` must be a bare `IP:PORT` string; the `--help` text used to
+say `http://ip:port` (wrong, and a scheme-prefixed URL used to crash the
+process uncaught) and now says `ip:port` - `connect_to_remote` also
+tolerates a copy-pasted `scheme://` prefix defensively and never throws on
+malformed input either way (see [SPEC 14](14-wire-protocol.md#2-public-api)).
+**Both commands now propagate the underlying transfer's success/failure**:
+a connection failure, a dropped transfer, or (for `pull` specifically - see
+SPEC 14 §4) a received object that fails its integrity check exits
+**`Network` = 8** with a message on stderr, instead of always exiting `Ok`.
+`push` cannot detect a receiver-side integrity failure over this protocol
+(no ack channel back to the sender - SPEC 14 §4); treat a pushed-to repo as
+unverified until it runs its own `sfs verify --full`.
 
-### `sfs serve [--listen host:port] [--repo <path>] [--read-only]`
-Starts the sync listener. Address, port and config **must be documented in the
-README** — a listed deliverable. Default `127.0.0.1:9418`.
+## 10. `sfs serve [-p/--port <port>]`
 
-### `sfs mount <ref> <mountpoint> [--foreground] [--cache-bytes N] [--allow-other]`
-Mounts a read-only view. `<mountpoint>/<file.name>` is the checkpoint from that
-commit. `--foreground` is required under a sanitizer build and is what the demo
-uses so `strace` output is visible.
+Defaults `-p` to `9418`, matching `RepoConfig::listen`'s documented default
+(it used to have no default at all, silently binding an OS-assigned
+ephemeral port - see [SPEC 14](14-wire-protocol.md#5-server)). Blocks
+forever in a single-connection-at-a-time accept loop; the command does not
+exit under normal operation.
 
-### `sfs unmount <mountpoint>`
-Unmounts, waiting for in-flight reads. Falls back to `fusermount3 -u`.
+## 11. `sfs mount <revision> <mountpoint> [-f/--foreground] [--debug]` (built only if `SFS_BUILD_MOUNT`)
 
-### `sfs gc [--pack] [--prune] [--dry-run]`
-Repacks loose objects and removes unreachable ones. Refuses while a mount
-daemon is attached (SPEC 11 §6).
+Resolves the revision to a commit/manifest, starts the FUSE3 low-level
+daemon, registers a PID marker (`.synapsefs/mount-daemon.pid`) so `gc` can
+refuse while attached, prints "Mounted `<abbrev>` at `<mountpoint>`
+(read-only)", then blocks running the FUSE session loop until unmounted.
+Mount is always read-only - `open()` rejects any non-`O_RDONLY` flag with
+`EROFS`.
 
----
+## 12. `sfs unmount <mountpoint>` (built only if `SFS_BUILD_MOUNT`)
 
-## 3. Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Generic failure |
-| 2 | Usage error — bad flags, missing argument (what CLI11 produces) |
-| 3 | Not a repository, or repository format unsupported |
-| 4 | **Integrity failure** — a hash mismatch, a tamper detection, a violated invariant |
-| 5 | Conflict — merge requires a resolution |
-| 6 | Locked — another process holds the write lock |
-| 7 | Not implemented in this build |
-| 8 | Network failure |
-
-Code 4 is deliberately its own value. "The data is wrong" and "the program is
-wrong" are different events for anyone scripting this, and the crash and tamper
-harnesses distinguish them.
-
-A command that is wired but unimplemented MUST exit 7 with a one-line message
-naming what is missing. Silently succeeding is worse than failing, and during a
-build week an honest exit 7 is what keeps the integration script meaningful.
-
----
-
-## 4. Output conventions
-
-- Identifiers abbreviate to 12 hex characters in human output, never in
-  `--json`.
-- Sizes are human-readable (`1.4 GiB`) in human output, exact byte integers in
-  `--json`.
-- Every long operation prints progress to stderr with a byte counter, and
-  prints nothing when stderr is not a TTY.
-- Errors are one line: `sfs: <command>: <what failed>: <path or oid>`, with
-  detail on following indented lines.
-
----
-
-## 5. Test hooks
-
-| Assertion | Test |
-|---|---|
-| `--help` lists every command; each has help text | `tests/test_end_to_end.cpp` |
-| Every unimplemented command exits 7 with a message | same |
-| `verify` on a tampered repo exits 4 and names the chunk | `tests/tamper.cpp` |
-| `merge` with both sides changed exits 5 and lists groups | `modules/store/tests/test_merge_logic.cpp` |
-| `--json` output parses for `log`, `commit`, `verify` | `tests/e2e.py` |
+Shells out to `fusermount3 -u <mountpoint>`.
