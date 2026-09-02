@@ -43,7 +43,9 @@ Result<DType> dtype_from_string(std::string_view s) noexcept {
 namespace {
 
 float f16_to_f32(std::uint16_t h) noexcept {
-    std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000u) << 16;
+    // h & 0x8000u already has type uint32_t (usual arithmetic conversions
+    // promote h's uint16_t to the wider unsigned operand): no cast needed.
+    std::uint32_t sign = (h & 0x8000u) << 16;
     std::uint32_t exp = (h >> 10) & 0x1Fu;
     std::uint32_t mant = h & 0x3FFu;
     std::uint32_t bits;

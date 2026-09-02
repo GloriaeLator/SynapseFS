@@ -1,6 +1,7 @@
 #include <synapsefs/core/repo_config.hpp>
 
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 #include <synapsefs/core/oid.hpp>
@@ -59,7 +60,13 @@ Result<RepoConfig> RepoConfig::load(const fs::path& repo_root) {
             auto v = parse_numeric_field<unsigned long>(
                 key, val, [](const std::string& s, std::size_t* p) { return std::stoul(s, p); });
             if (!v) return std::unexpected(v.error());
-            cfg.format_version = *v;
+            // parse_numeric_field<unsigned long> is 64-bit; format_version is
+            // uint32_t. Reject out-of-range values explicitly instead of
+            // letting a cast truncate them -- 0x1'0000'0001 silently becoming
+            // 1 would read as a valid format_version and pass validate().
+            if (*v > std::numeric_limits<std::uint32_t>::max())
+                return SFS_ERR(UnsupportedFormatVersion, "format_version out of range", val);
+            cfg.format_version = static_cast<std::uint32_t>(*v);
         } else if (key == "chunk_bytes") {
             auto v = parse_numeric_field<unsigned long long>(
                 key, val, [](const std::string& s, std::size_t* p) { return std::stoull(s, p); });
@@ -74,7 +81,9 @@ Result<RepoConfig> RepoConfig::load(const fs::path& repo_root) {
             auto v = parse_numeric_field<unsigned long>(
                 key, val, [](const std::string& s, std::size_t* p) { return std::stoul(s, p); });
             if (!v) return std::unexpected(v.error());
-            cfg.max_chain_depth = *v;
+            if (*v > std::numeric_limits<std::uint32_t>::max())
+                return SFS_ERR(MalformedObject, "max_chain_depth out of range", val);
+            cfg.max_chain_depth = static_cast<std::uint32_t>(*v);
         } else if (key == "snapshot_alpha") {
             auto v = parse_numeric_field<double>(
                 key, val, [](const std::string& s, std::size_t* p) { return std::stod(s, p); });

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <cstdint>
 #include <cstring>
 #include <cctype>
 #include <algorithm>
@@ -137,7 +138,8 @@ bool send_all(int socket, const char* buffer, size_t length) {
     while (total_sent < length) {
         ssize_t sent = send(socket, buffer + total_sent, length - total_sent, 0);
         if (sent <= 0) return false;
-        total_sent += sent;
+        // sent > 0 is already checked above, so this narrowing is provably safe.
+        total_sent += static_cast<size_t>(sent);
     }
     return true;
 }
@@ -148,7 +150,7 @@ bool read_exact(int socket, char* buffer, size_t length) {
     while (total_read < length) {
         ssize_t r = recv(socket, buffer + total_read, length - total_read, 0);
         if (r <= 0) return false;
-        total_read += r;
+        total_read += static_cast<size_t>(r);
     }
     return true;
 }
@@ -195,7 +197,7 @@ int connect_to_remote(const std::string& url) {
         return -1;
     }
 
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(sock, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
         close(sock);
         return -1;
     }
@@ -235,21 +237,24 @@ void handle_send_file(int sock, const std::string& filepath, size_t offset) {
     std::ifstream file(filepath, std::ios::binary | std::ios::ate);
     if (!file) return;
     
-    size_t total_size = file.tellg();
+    std::streamoff tell = file.tellg();
+    if (tell < 0) return;  // tellg() failed; nothing sane to send
+    size_t total_size = static_cast<size_t>(tell);
     if (offset > total_size) offset = total_size;
 
     std::string header = "FILE\n" + filepath + "\n" + std::to_string(total_size) + "\n" + std::to_string(offset) + "\n";
     if (!send_all(sock, header.c_str(), header.length())) return;
 
-    file.seekg(offset, std::ios::beg);
+    file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
     char buffer[8192];
     size_t remaining = total_size - offset;
     size_t bytes_sent = 0;
 
     while (bytes_sent < remaining) {
         file.read(buffer, sizeof(buffer));
-        size_t read_bytes = file.gcount();
-        if (read_bytes > 0) {
+        std::streamsize got = file.gcount();
+        if (got > 0) {
+            size_t read_bytes = static_cast<size_t>(got);
             if (!send_all(sock, buffer, read_bytes)) {
                 std::cerr << "Transfer dropped while sending: " << filepath << "\n";
                 return; // Socket error
@@ -300,7 +305,7 @@ bool handle_receive_file(int sock) {
             return false;
         }
         file.write(buffer, r);
-        bytes_received += r;
+        bytes_received += static_cast<size_t>(r);
     }
     file.close();
 
@@ -451,12 +456,18 @@ void serve(int port) {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+    if (port < 0 || port > 65535) {
+        std::cerr << "Invalid port: " << port << "\n";
+        close(server_fd);
+        return;
+    }
+
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+    server_addr.sin_port = htons(static_cast<std::uint16_t>(port));
 
-    bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    bind(server_fd, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr));
     listen(server_fd, 5);
     std::cout << "Synapse server listening on port " << port << "...\n";
 

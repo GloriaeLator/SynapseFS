@@ -8,6 +8,7 @@
 #include <synapsefs/util/atomic_io.hpp>
 #include <synapsefs/util/bits.hpp>
 #include <synapsefs/util/file.hpp>
+#include <synapsefs/util/log.hpp>
 namespace fs = std::filesystem;
 
 namespace sfs::store {
@@ -114,7 +115,11 @@ public:
         while (off < data.size()) {
             std::size_t space = static_cast<std::size_t>(chunk_bytes_) - chunk_buf_.size();
             std::size_t take = std::min(space, data.size() - off);
-            chunk_buf_.insert(chunk_buf_.end(), data.begin() + off, data.begin() + off + take);
+            // span::iterator is contiguous; its difference_type is ptrdiff_t.
+            // off and off + take are both bounded by data.size(), so the
+            // narrowing to signed is provably safe.
+            chunk_buf_.insert(chunk_buf_.end(), data.begin() + static_cast<std::ptrdiff_t>(off),
+                              data.begin() + static_cast<std::ptrdiff_t>(off + take));
             off += take;
             if (chunk_buf_.size() == chunk_bytes_) flush_chunk();
         }
@@ -216,7 +221,14 @@ public:
             abort();
             return SFS_ERR(Io, "rename failed", dest.string());
         }
-        util::fsync_dir(dest.parent_path());
+        if (auto r = util::fsync_dir(dest.parent_path()); !r) {
+            // The rename already succeeded and the object's bytes are durable;
+            // only the directory entry's durability is in question. Non-fatal
+            // (the object is usable now), but it was previously discarded
+            // outright despite fsync_dir being [[nodiscard]] — surface it.
+            SFS_LOG_W("block_store", "fsync of objects directory failed after commit: {}",
+                      r.error().message());
+        }
 
         fd_.reset();
         fs::remove(tmp_path_, ec);

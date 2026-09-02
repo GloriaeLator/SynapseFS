@@ -16,7 +16,11 @@ std::string now_timestamp() {
     std::time_t t = std::chrono::system_clock::to_time_t(secs);
     std::tm tm{};
     gmtime_r(&t, &tm);
-    char buf[32];
+    // %04d is a minimum width, not a maximum: tm_year + 1900 is a plain int,
+    // so GCC's -Wformat-truncation=2 is right that the 32-byte form has a
+    // theoretical truncation path. Sizing generously costs nothing on a
+    // stack buffer and removes the diagnostic outright.
+    char buf[64];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ", tm.tm_year + 1900,
                  tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     return buf;

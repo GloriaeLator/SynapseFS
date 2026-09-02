@@ -63,14 +63,19 @@ void CostMatrix::accumulate_tile(std::span<const float> target_tile, std::uint32
 
 double CostMatrix::identity_cost() const noexcept {
     double total = 0.0;
-    for (std::uint32_t i = 0; i < n_; ++i) total += values_[static_cast<std::size_t>(i) * n_ + i];
+    // Accumulating float terms into a double is intentional here (it keeps
+    // rounding error bounded across a long sum); make the widening explicit
+    // so -Wdouble-promotion has nothing left to flag. Annotation only — the
+    // arithmetic is unchanged.
+    for (std::uint32_t i = 0; i < n_; ++i)
+        total += static_cast<double>(values_[static_cast<std::size_t>(i) * n_ + i]);
     return total;
 }
 
 double CostMatrix::random_cost() const noexcept {
     if (n_ == 0) return 0.0;
     double total = 0.0;
-    for (float v : values_) total += v;
+    for (float v : values_) total += static_cast<double>(v);
     return total / static_cast<double>(n_);
 }
 
@@ -78,7 +83,7 @@ double CostMatrix::assignment_cost(std::span<const std::uint32_t> perm) const no
     double total = 0.0;
     const std::uint32_t limit = std::min<std::uint32_t>(n_, static_cast<std::uint32_t>(perm.size()));
     for (std::uint32_t i = 0; i < limit; ++i) {
-        total += values_[static_cast<std::size_t>(i) * n_ + perm[i]];
+        total += static_cast<double>(values_[static_cast<std::size_t>(i) * n_ + perm[i]]);
     }
     return total;
 }

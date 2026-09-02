@@ -48,7 +48,7 @@ Result<std::unique_ptr<StSource>> StSource::open(const std::filesystem::path& pa
     self->impl_->total_bytes = total;
     self->impl_->use_mmap = opts.use_mmap;
 
-    self->impl_->header_prefix.resize(static_cast<std::size_t>(8 + json_len));
+    self->impl_->header_prefix.resize(8 + json_len);
     auto n_full = util::pread_all(self->impl_->fd.get(), self->impl_->header_prefix, 0);
     if (!n_full || *n_full != self->impl_->header_prefix.size())
         return SFS_ERR(NotSafetensors, "cannot read full header", path.string());
@@ -115,7 +115,7 @@ Result<std::size_t> StSource::read_units(std::string_view name, std::uint64_t fi
     std::uint64_t stride = *ub;
 
     std::uint64_t offset = m->data_off + first * stride;
-    std::size_t want = static_cast<std::size_t>(count * stride);
+    std::size_t want = count * stride;
     if (out.size() < want)
         return SFS_ERR(Internal, "output buffer too small for requested units");
 

@@ -71,7 +71,7 @@ public:
         const std::uint64_t stride = *ub;
 
         const std::uint64_t offset = first * stride;
-        const auto want = static_cast<std::size_t>(count * stride);
+        const std::size_t want = count * stride;
         if (out.size() < want) {
             return SFS_ERR(Internal, "output buffer too small for requested units",
                           std::string(name));
