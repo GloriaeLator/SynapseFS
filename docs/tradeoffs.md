@@ -1,8 +1,7 @@
 # Trade-offs
 
 Every choice that could reasonably have gone another way, what we picked, and
-the number or argument behind it. Rows marked **PENDING** have a scheduled
-measurement, not a placeholder left by accident.
+the number or argument behind it.
 
 ---
 
@@ -150,11 +149,13 @@ trade-off is not validated by this benchmark as constructed. See
 `align::Matcher` actually uses at each size, and the separate sparse-path
 (`match_group_sparse`, n ≥ 8192) scaling measurement.
 
-### 1.6 Frame size and chain depth — **PENDING sweep**
+### 1.6 Frame size and chain depth — not swept
 
 128 KiB and 5 are defaults chosen together, not separately: small frames are
-what make a deep chain tolerable. Sweep both against read latency and
-repository size on a 10-commit lineage and record the result here.
+what make a deep chain tolerable. Given more time, we would have swept both
+against read latency and repository size on a multi-commit lineage to
+confirm that pairing actually holds rather than just reasoning about it —
+not done here.
 
 ---
 
