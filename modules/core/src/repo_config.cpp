@@ -9,6 +9,32 @@ namespace fs = std::filesystem;
 
 namespace sfs::core {
 
+namespace {
+
+// std::stoul/stoull/stod throw std::invalid_argument/std::out_of_range on
+// anything that isn't a clean number -- uncaught, that used to mean a
+// hand-corrupted (or just hand-edited-wrong) config file crashed the whole
+// process instead of producing the clean core::Error every other failure
+// path in this codebase returns (docs/known-gaps.md's ".synapsefs/config
+// parsing" row). This wraps every numeric field the same way.
+template <class T, class Parser>
+[[nodiscard]] Result<T> parse_numeric_field(std::string_view key, const std::string& val,
+                                            Parser parser) {
+    try {
+        std::size_t pos = 0;
+        T v = parser(val, &pos);
+        if (pos != val.size()) {
+            return SFS_ERR(Internal, "config: trailing garbage after number", std::string(key));
+        }
+        return v;
+    } catch (const std::exception& e) {
+        return SFS_ERR(Internal, "config: malformed numeric value for '" + std::string(key) + "'",
+                       e.what());
+    }
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // RepoConfig — a flat "key=value" file, one per line. Deliberately not JSON:
 // this file is machine-local policy, never hashed or transmitted, so there is
@@ -29,14 +55,41 @@ Result<RepoConfig> RepoConfig::load(const fs::path& repo_root) {
         std::string val = line.substr(eq + 1);
         while (!val.empty() && (val.back() == '\r' || val.back() == '\n')) val.pop_back();
 
-        if (key == "format_version") cfg.format_version = std::stoul(val);
-        else if (key == "chunk_bytes") cfg.chunk_bytes = std::stoull(val);
-        else if (key == "frame_bytes") cfg.frame_bytes = std::stoull(val);
-        else if (key == "max_chain_depth") cfg.max_chain_depth = std::stoul(val);
-        else if (key == "snapshot_alpha") cfg.snapshot_alpha = std::stod(val);
-        else if (key == "compress_raw") cfg.compress_raw = (val == "1" || val == "true");
-        else if (key == "cache_bytes") cfg.cache_bytes = std::stoull(val);
-        else if (key == "listen") cfg.listen = val;
+        if (key == "format_version") {
+            auto v = parse_numeric_field<unsigned long>(
+                key, val, [](const std::string& s, std::size_t* p) { return std::stoul(s, p); });
+            if (!v) return std::unexpected(v.error());
+            cfg.format_version = *v;
+        } else if (key == "chunk_bytes") {
+            auto v = parse_numeric_field<unsigned long long>(
+                key, val, [](const std::string& s, std::size_t* p) { return std::stoull(s, p); });
+            if (!v) return std::unexpected(v.error());
+            cfg.chunk_bytes = *v;
+        } else if (key == "frame_bytes") {
+            auto v = parse_numeric_field<unsigned long long>(
+                key, val, [](const std::string& s, std::size_t* p) { return std::stoull(s, p); });
+            if (!v) return std::unexpected(v.error());
+            cfg.frame_bytes = *v;
+        } else if (key == "max_chain_depth") {
+            auto v = parse_numeric_field<unsigned long>(
+                key, val, [](const std::string& s, std::size_t* p) { return std::stoul(s, p); });
+            if (!v) return std::unexpected(v.error());
+            cfg.max_chain_depth = *v;
+        } else if (key == "snapshot_alpha") {
+            auto v = parse_numeric_field<double>(
+                key, val, [](const std::string& s, std::size_t* p) { return std::stod(s, p); });
+            if (!v) return std::unexpected(v.error());
+            cfg.snapshot_alpha = *v;
+        } else if (key == "compress_raw") {
+            cfg.compress_raw = (val == "1" || val == "true");
+        } else if (key == "cache_bytes") {
+            auto v = parse_numeric_field<unsigned long long>(
+                key, val, [](const std::string& s, std::size_t* p) { return std::stoull(s, p); });
+            if (!v) return std::unexpected(v.error());
+            cfg.cache_bytes = *v;
+        } else if (key == "listen") {
+            cfg.listen = val;
+        }
     }
     if (auto st = cfg.validate(); !st) return std::unexpected(st.error());
     return cfg;

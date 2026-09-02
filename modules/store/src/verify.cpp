@@ -1,5 +1,9 @@
 #include <synapsefs/store/verify.hpp>
 
+#include <optional>
+#include <stdexcept>
+#include <vector>
+
 namespace sfs::store {
 
 Status check_ancestor_invariant(CommitStore& commits, const Oid& commit_oid,
@@ -90,7 +94,36 @@ Result<VerifyReport> verify(core::IBlockStore& blocks, CommitStore& commits,
 
             if (opts.full) {
                 if (auto vst = blocks.verify_block(oid, kind); !vst) {
-                    add_finding(vst.error().kind, oid, std::string(what) + ": " + vst.error().what);
+                    // Chunk attribution: verify_block()/get() only prove the
+                    // WHOLE object's framed hash doesn't match -- they say
+                    // nothing about which byte range is wrong (a real gap,
+                    // docs/known-gaps.md's "sfs verify chunk attribution"
+                    // row). Rather than extend IBlockStore with a new method,
+                    // reuse read_range(): store/loose.cpp already walks a
+                    // touched range chunk-by-chunk and its failing chunk's
+                    // own error already carries the exact chunk_index
+                    // (format::verify_chunk's SFS_ERR puts it in `context`),
+                    // so one whole-object read_range() call re-derives it for
+                    // free. Only attempted for a payload-corruption-shaped
+                    // failure (HashMismatch); a MalformedObject/decode-level
+                    // failure has no meaningful single chunk to name.
+                    std::optional<std::uint32_t> chunk_idx;
+                    if (vst.error().kind == core::ErrKind::HashMismatch) {
+                        if (auto sz = blocks.size_of(oid); sz && *sz > 0) {
+                            std::vector<std::byte> probe(static_cast<std::size_t>(*sz));
+                            auto rr = blocks.read_range(oid, kind, 0, probe);
+                            if (!rr && rr.error().kind == core::ErrKind::ChunkDigestMismatch) {
+                                try {
+                                    chunk_idx = static_cast<std::uint32_t>(
+                                        std::stoul(rr.error().context));
+                                } catch (const std::exception&) {
+                                    // Leave chunk_idx unset rather than report a bogus index.
+                                }
+                            }
+                        }
+                    }
+                    add_finding(vst.error().kind, oid, std::string(what) + ": " + vst.error().what,
+                               chunk_idx);
                 } else {
                     // verify_block() re-hashes every chunk but only returns
                     // pass/fail; size_of() is the only way to know how much
