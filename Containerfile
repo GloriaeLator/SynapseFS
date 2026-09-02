@@ -87,7 +87,7 @@ FROM ${TORCH_RUNTIME_IMAGE} AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libzstd1 libjson-c5 fuse3 \
+      libzstd1 libjson-c5 fuse3 libfuse3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN PY="$(command -v python || command -v python3)" \
@@ -100,5 +100,4 @@ RUN ldconfig
 
 RUN sfs --help > /dev/null
 
-ENTRYPOINT ["sfs"]
-CMD ["--help"]
+CMD ["sfs --help"]
