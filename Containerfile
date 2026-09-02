@@ -11,6 +11,7 @@ ARG BLAKE3_TAG=1.8.7
 ARG ENABLE_LTO=OFF
 ARG BUILD_MOUNT=ON
 ARG BUILD_TESTS=OFF
+ARG BUILD_BENCH=OFF
 # Default to $(nproc) via empty string below, but override on a
 # memory-constrained host: each translation unit including <torch/torch.h>
 # can use 1-2+ GB by itself, and launching one per core can overcommit a
@@ -27,6 +28,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libzstd-dev libssl-dev libjson-c-dev libfuse3-dev \
       nlohmann-json3-dev libcli11-dev catch2 \
     && rm -rf /var/lib/apt/lists/*
+
+# tests/e2e.py's whole point is asserting safetensors.torch.load_file()
+# works UNMODIFIED against the mount -- torch is already in this base image,
+# but the safetensors package itself is not. Only needed in the build stage
+# (where tests run); the runtime image never imports it.
+RUN pip install --no-cache-dir --break-system-packages safetensors
 
 RUN cmake --version \
     && printf 'cmake_minimum_required(VERSION 3.25)\n' > /tmp/vcheck.cmake \
@@ -66,7 +73,7 @@ RUN cmake -S . -B build/release -G Ninja \
       -DCMAKE_DISABLE_FIND_PACKAGE_zstd=ON \
       -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
       -DSFS_BUILD_TESTS="${BUILD_TESTS}" \
-      -DSFS_BUILD_BENCH=OFF \
+      -DSFS_BUILD_BENCH="${BUILD_BENCH}" \
       -DSFS_BUILD_MOUNT="${BUILD_MOUNT}" \
       -DSFS_ENABLE_SIMD=ON \
       -DSFS_ENABLE_LTO="${ENABLE_LTO}" \
